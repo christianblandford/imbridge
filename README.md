@@ -27,8 +27,8 @@ asyncio.run(main())
   code, the only moving part is a small helper inside Messages, which talks to your process over a token-protected
   localhost socket.
 - **It can't spam your contacts.** imbridge sends nowhere until you allow a chat, either in your code or with
-  `imbridge allow`, which only a person at a terminal can run. A chat handle refuses messages from other chats, and
-  rate limits stop runaway loops.
+  `imbridge allow`, which only a person at a terminal can run. A chat handle refuses messages from other chats, rate
+  limits stop runaway loops, and with two numbers on one Apple ID it only answers on the one you choose.
 - **Any-emoji tapbacks.** The classic six plus any emoji, as iOS 18 and macOS 15 allow. BlueBubbles' released helper
   and imsg can only send the classic six.
 - **Real iMessage features.** Inline replies, tapbacks, message effects, typing indicators and read receipts, done by
@@ -109,8 +109,11 @@ load the helper. Allow it. To run the latest code instead of a release, use
 `pip install git+https://github.com/christianblandford/imbridge`. That builds the helper, so it needs the Xcode
 Command Line Tools (`xcode-select --install`).
 
-**4. Decide where imbridge may send.** Until you do, it only reads. List the chats in your code with
-`IMBridge(allow=["+15551234567", "Family"])`, or allow them once for every program on this Mac, including the CLI:
+**4. Decide where imbridge may send.** Until you do, it only reads. If your Apple ID has more than one phone number
+(two iPhones, say), also tell each program which number it is with `IMBridge(address="+15550002222")` or
+`IMBRIDGE_ADDRESS`; see [Which of your numbers it answers on](#which-of-your-numbers-it-answers-on). List the chats in
+your code with `IMBridge(allow=["+15551234567", "Family"])`, or allow them once for every program on this Mac,
+including the CLI:
 
 ```bash
 imbridge chats                   # find the chat: a phone number, an email, a group's name, or its GUID
@@ -139,6 +142,27 @@ imbridge is built so that a bug in your code, or an agent getting creative, can'
 - **Your own messages** are left out of every stream unless you ask for them (`include_from_me=True`), so a bot doesn't
   answer itself.
 
+### Which of your numbers it answers on
+
+A Mac signed in to your Apple ID receives messages sent to every address on it. With two iPhones on one Apple ID,
+texts to your personal number and texts to your bot's number arrive in the same place, and even in the same chat when
+one person texts both. So tell each program which address it is:
+
+```python
+async with IMBridge(address="+15550002222", allow=["+15551234567"]) as im:   # or IMBRIDGE_ADDRESS=+15550002222
+    ...
+```
+
+- **It only sees messages sent to that address.** Streams and history leave everything else out.
+- **It only sends from that address.** Messages replies from whatever address a conversation is on, so imbridge
+  refuses (`WrongAddress`) to send in a chat that's on another address. It also refuses to reply or react to a message
+  that was sent to another address.
+- **Without an address,** imbridge refuses to read or send (`AddressNotChosen`) while this Mac has recent messages at
+  more than one of your phone numbers. If a second number turns up while a program is running, the stream stops with
+  the same error instead of passing that message on. Use `address=ANY_ADDRESS` to deliberately take every number.
+
+`imbridge doctor` lists the numbers in use, every `Message` and chat has an `address`, and the CLI takes `--address`.
+
 ## Python API
 
 ```python
@@ -164,7 +188,8 @@ async with IMBridge(allow=["+15551234567"]) as im:
 A group's name only works when no other chat shares it; otherwise imbridge refuses and lists the candidates' GUIDs
 (`imbridge chats` shows which is which).
 
-A chat has `guid`, `name`, `is_group`, `participants`, `last_message_at` and `can_send`. `IMBridge` also has `send`,
+A chat has `guid`, `name`, `is_group`, `participants`, `last_message_at`, `address` (which of your addresses it's
+on) and `can_send`. `IMBridge` also has `send`,
 `reply`, `react`, `typing` and `mark_read` that take a chat or message GUID directly; the same allowlist and limits
 apply. iMessage keeps one tapback per person per message, so a new tapback replaces your previous one.
 
@@ -179,13 +204,16 @@ Every `Message` has these fields:
 | `reply_to` | the GUID of the message this is an inline reply to |
 | `reaction` | set when the row is a tapback: `kind` (`love`…`question`, `emoji`, `sticker`), `emoji`, `removed`, `target_guid`, `target_part` |
 | `attachments` | each with a `path` on disk, `mime_type` and `name` |
+| `address` | which of your addresses it was sent to (or, for your own messages, sent from) |
 
-**Options.** `IMBridge(allow=..., max_per_chat=10, max_total=30)` are covered above. `inject=True` loads the helper
+**Options.** `IMBridge(allow=..., address=..., max_per_chat=10, max_total=30)` are covered above. `inject=True` loads the helper
 into Messages whenever none answers; pass `inject=False` if something else manages Messages. `poll_interval` (default
 0.5 seconds) sets how often streams check for new messages. Reading (streams, `history`, `chats`, `message`) only
 touches `chat.db`, so it works without the helper.
 
-**Errors.** `SendNotAllowed` means the chat isn't allowed. `RateLimited` means a limit was hit. `WrongChat` means a
+**Errors.** `SendNotAllowed` means the chat isn't allowed. `RateLimited` means a limit was hit. `AddressNotChosen`
+means this Mac gets messages at several of your phone numbers and the program hasn't said which it is. `WrongAddress`
+means a chat or message is on another of your addresses. `WrongChat` means a
 chat was handed another chat's message. `ChatNotFound` means no existing conversation matches. `HelperError` means the
 helper refused or failed; its subclasses are `HelperNotConnected` and `HelperUnauthorized`. `FullDiskAccessError`
 means `chat.db` can't be read.
@@ -193,7 +221,7 @@ means `chat.db` can't be read.
 **Effects:** `slam`, `loud`, `gentle`, `invisible_ink`, `echo`, `spotlight`, `balloons`, `confetti`, `love`, `lasers`,
 `fireworks`, `celebration`, `shooting_star`.
 
-**Environment variables:** `IMBRIDGE_PORT` sets the port the helper dials (default 45700 for the first user account on
+**Environment variables:** `IMBRIDGE_ADDRESS` is the default `address` (`any` for `ANY_ADDRESS`). `IMBRIDGE_PORT` sets the port the helper dials (default 45700 for the first user account on
 the Mac, one higher for each further account). `IMBRIDGE_HELPER` loads a helper dylib other than the bundled one.
 
 ## Command line
@@ -210,6 +238,7 @@ imbridge react GUID 🔥 [--remove]
 imbridge chats [-n 20] [--json]
 imbridge history +15551234567 [-n 20] [--json]
 imbridge watch [--chat CHAT] [--json] [--from-me]    # stream new messages; --json prints one object per line
+imbridge <command> --address +15550002222           # start, send, reply, react, history and watch take --address
 ```
 
 `send`, `reply` and `react` print the new message's GUID. They follow the same allowlist and rate limits as the
@@ -246,6 +275,9 @@ library.
 - **Messages disappears when the helper loads.** It restarts hidden; open it from the Dock as usual.
 - **The helper won't stay loaded.** Quit BlueBubbles Server if it's installed: it relaunches Messages with its own
   helper.
+- **`AddressNotChosen` or `WrongAddress`:** see
+  [Which of your numbers it answers on](#which-of-your-numbers-it-answers-on). `imbridge doctor` lists the numbers
+  in use.
 - **Testing in a chat with yourself.** Everything you send also comes back as received, and Messages replaces your own
   tapback rows with the ones that come back.
 

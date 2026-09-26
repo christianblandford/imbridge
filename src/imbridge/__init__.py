@@ -2,6 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
+from .addresses import ANY_ADDRESS, AddressNotChosen, WrongAddress
 from .chatdb import Attachment, ChatDB, ChatInfo, FullDiskAccessError, Message
 from .client import EFFECTS, Chat, ChatNotFound, IMBridge, WrongChat
 from .guard import ANY_CHAT, RateLimited, SendNotAllowed
@@ -14,7 +15,10 @@ except PackageNotFoundError:  # running from a source checkout
     __version__ = "0.0.0"
 
 __all__ = [
+    "ANY_ADDRESS",
     "ANY_CHAT",
+    "AddressNotChosen",
+    "WrongAddress",
     "CLASSIC_TAPBACKS",
     "EFFECTS",
     "Attachment",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import re
 import shutil
@@ -10,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import config, messages_app
+from .addresses import is_phone
 from .chatdb import ChatDB, FullDiskAccessError
 from .guard import ANY_LINE, read_allowed
 
@@ -84,8 +86,21 @@ def run_checks(dylib: Path | None = None) -> list[Check]:
     )
 
     try:
-        count = ChatDB().max_rowid()
+        db = ChatDB()
+        count = db.max_rowid()
         checks.append(Check("Full Disk Access (reading chat.db)", True, f"{count:,} messages readable"))
+        phones = [address for address in db.my_addresses() if is_phone(address)]
+        chosen = os.environ.get("IMBRIDGE_ADDRESS")
+        if chosen:
+            checks.append(Check("Your phone numbers", True, f"programs use IMBRIDGE_ADDRESS={chosen}"))
+        elif len(phones) > 1:
+            checks.append(
+                Check("Your phone numbers", None, f"messages arrive at several: {', '.join(phones)}",
+                      "tell each program which one it is: IMBridge(address=...) or IMBRIDGE_ADDRESS")
+            )
+        else:
+            number = phones[0] if phones else "none yet"
+            checks.append(Check("Your phone numbers", True, f"messages arrive at {number}"))
     except FullDiskAccessError:
         checks.append(
             Check("Full Disk Access (reading chat.db)", False, "chat.db can't be opened",

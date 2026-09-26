@@ -8,6 +8,7 @@ import json
 import sys
 
 from . import __version__
+from .addresses import ANY_ADDRESS, AddressNotChosen, WrongAddress
 from .chatdb import FullDiskAccessError, Message
 from .client import EFFECTS, Chat, ChatNotFound, IMBridge, WrongChat
 from .doctor import run_checks
@@ -20,6 +21,8 @@ def describe(message: Message) -> str:
     when = message.date.astimezone().strftime("%H:%M:%S") if message.date else "--:--:--"
     who = "me" if message.is_from_me else (message.sender or "?")
     where = message.chat_name or message.chat_guid or "?"
+    if message.address:
+        where += f" via {message.address}"
     if reaction := message.reaction:
         body = f"{'removed ' if reaction.removed else ''}{reaction.label} on {reaction.target_guid}"
     else:
@@ -34,6 +37,11 @@ def describe(message: Message) -> str:
 
 def _label(chat: Chat) -> str:
     return chat.name or ", ".join(chat.participants) or chat.guid
+
+
+def _bridge(args: argparse.Namespace, *, inject: bool = True) -> IMBridge:
+    address = getattr(args, "address", None)
+    return IMBridge(address=ANY_ADDRESS if address and address.lower() == "any" else address, inject=inject)
 
 
 def _print_message(message: Message, as_json: bool) -> None:
@@ -112,8 +120,8 @@ def _allowed() -> int:
     return 0
 
 
-async def _start() -> int:
-    async with IMBridge() as im:
+async def _start(args: argparse.Namespace) -> int:
+    async with _bridge(args) as im:
         account = await im.account()
     status = account.get("login_status_message") or "unknown"
     print(f"helper ready: Messages is signed in as {account.get('apple_id')} (iMessage: {status})")
@@ -121,7 +129,7 @@ async def _start() -> int:
 
 
 async def _send(args: argparse.Namespace) -> int:
-    async with IMBridge() as im:
+    async with _bridge(args) as im:
         if args.command == "send":
             guid = await im.send(args.chat, args.text, reply_to=args.reply_to, effect=args.effect)
         elif args.command == "reply":
@@ -133,7 +141,7 @@ async def _send(args: argparse.Namespace) -> int:
 
 
 async def _watch(args: argparse.Namespace) -> int:
-    im = IMBridge(inject=False)
+    im = _bridge(args, inject=False)
     stream = im.chat(args.chat).messages if args.chat else im.all_messages
     async for message in stream(include_from_me=args.from_me):
         _print_message(message, args.json)
@@ -146,9 +154,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"imbridge {__version__}")
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
+    mine = argparse.ArgumentParser(add_help=False)
+    mine.add_argument(
+        "--address",
+        help="which of your own addresses this is (phone number or email), or 'any'; default $IMBRIDGE_ADDRESS",
+    )
 
     commands.add_parser("doctor", help="check that this Mac is set up for imbridge")
-    commands.add_parser("start", help="load the helper into Messages (restarting it, hidden) and wait until it answers")
+    commands.add_parser(
+        "start", parents=[mine], help="load the helper into Messages (restarting it, hidden) and wait until it answers"
+    )
 
     allow = commands.add_parser("allow", help="let imbridge send to a chat (asks you to confirm)")
     allow.add_argument("chat", nargs="?", help="phone number, email, group name, or chat GUID")
@@ -158,17 +173,19 @@ def _parser() -> argparse.ArgumentParser:
     disallow.add_argument("--any", action="store_true", help="turn off 'any chat'")
     commands.add_parser("allowed", help="list the chats imbridge may send to")
 
-    send = commands.add_parser("send", help="send a message to an allowed chat")
+    send = commands.add_parser("send", parents=[mine], help="send a message to an allowed chat")
     send.add_argument("chat", help="phone number, email, group name, or chat GUID")
     send.add_argument("text")
     send.add_argument("--reply-to", metavar="GUID", help="send it as an inline reply to this message")
     send.add_argument("--effect", choices=sorted(EFFECTS), help="bubble or screen effect")
 
-    reply = commands.add_parser("reply", help="reply inline to a message in an allowed chat")
+    reply = commands.add_parser("reply", parents=[mine], help="reply inline to a message in an allowed chat")
     reply.add_argument("message", metavar="GUID")
     reply.add_argument("text")
 
-    react = commands.add_parser("react", help="tapback a message in an allowed chat: a classic reaction or any emoji")
+    react = commands.add_parser(
+        "react", parents=[mine], help="tapback a message in an allowed chat: a classic reaction or any emoji"
+    )
     react.add_argument("message", metavar="GUID")
     react.add_argument("reaction", help=f"{', '.join(CLASSIC_TAPBACKS)}, or any emoji")
     react.add_argument("--remove", action="store_true", help="take the tapback away")
@@ -177,12 +194,12 @@ def _parser() -> argparse.ArgumentParser:
     chats.add_argument("-n", type=int, default=20, help="how many (default 20)")
     chats.add_argument("--json", action="store_true", help="one JSON object per line")
 
-    history = commands.add_parser("history", help="show a chat's latest messages")
+    history = commands.add_parser("history", parents=[mine], help="show a chat's latest messages")
     history.add_argument("chat", help="phone number, email, group name, or chat GUID")
     history.add_argument("-n", type=int, default=20, help="how many (default 20)")
     history.add_argument("--json", action="store_true", help="one JSON object per line")
 
-    watch = commands.add_parser("watch", help="print new messages, tapbacks and replies as they arrive")
+    watch = commands.add_parser("watch", parents=[mine], help="print new messages, tapbacks and replies as they arrive")
     watch.add_argument("--chat", help="only this chat")
     watch.add_argument("--json", action="store_true", help="one JSON object per line")
     watch.add_argument("--from-me", action="store_true", help="include messages you send")
@@ -201,12 +218,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "allowed":
             return _allowed()
         if args.command == "start":
-            return asyncio.run(_start())
+            return asyncio.run(_start(args))
         if args.command in ("send", "reply", "react"):
             return asyncio.run(_send(args))
         if args.command == "watch":
             return asyncio.run(_watch(args))
-        im = IMBridge(inject=False)
+        im = _bridge(args, inject=False)
         if args.command == "chats":
             for chat in im.chats(args.n):
                 if args.json:
@@ -226,6 +243,8 @@ def main(argv: list[str] | None = None) -> int:
         ChatNotFound,
         WrongChat,
         SendNotAllowed,
+        AddressNotChosen,
+        WrongAddress,
         RateLimited,
         HelperError,
         TimeoutError,

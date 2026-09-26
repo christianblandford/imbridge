@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .addresses import address_key, display_address
 from .config import CHAT_DB
 from .reactions import Reaction, parse_reaction
 from .typedstream import attributed_body_text
@@ -55,6 +57,7 @@ class Message:
     reply_to: str | None = None  # guid of the message this is an inline reply to
     reaction: Reaction | None = None  # set when this row is a tapback or sticker
     attachments: tuple[Attachment, ...] = ()
+    address: str | None = None  # which of your addresses it was sent to (or, for your own messages, sent from)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -71,6 +74,7 @@ class ChatInfo:
     is_group: bool
     participants: tuple[str, ...]
     last_message_at: datetime | None
+    address: str | None = None  # which of your addresses the conversation is on (what Messages sends from)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -84,6 +88,8 @@ class ChatDB:
         self._db: sqlite3.Connection | None = None
         self._select = ""
         self._last_activity = ""
+        self._chat_address = "NULL"  # chat.last_addressed_handle, where this macOS has it
+        self._message_address = "NULL"  # message.destination_caller_id, likewise
 
     def close(self) -> None:
         if self._db is not None:
@@ -118,7 +124,7 @@ class ChatDB:
         self._connect()
         rows = self._query(
             "SELECT c.ROWID AS rowid, c.guid, c.chat_identifier, c.display_name, c.service_name, c.style,"
-            f" {self._last_activity} AS last_date FROM chat c {clause}",
+            f" {self._chat_address} AS address, {self._last_activity} AS last_date FROM chat c {clause}",
             params,
         )
         chats = []
@@ -139,9 +145,27 @@ class ChatDB:
                     is_group=row["style"] == GROUP_STYLE,
                     participants=participants,
                     last_message_at=apple_time(row["last_date"]),
+                    address=display_address(row["address"]),
                 )
             )
         return chats
+
+    def my_addresses(self, days: int = 90) -> list[str]:
+        """Your addresses that Messages used here in the last `days` days: on messages, and on chats active since."""
+        self._connect()
+        since = int((time.time() - APPLE_EPOCH - days * 86_400) * 1e9)
+        values = [row[0] for row in self._query(
+            f"SELECT DISTINCT {self._message_address} FROM message WHERE date > ?", (since,)
+        )]
+        values += [row[0] for row in self._query(
+            f"SELECT DISTINCT {self._chat_address} FROM chat c WHERE {self._last_activity} > ?", (since,)
+        )]
+        found: dict[str, str] = {}
+        for value in values:
+            key, shown = address_key(value), display_address(value)
+            if key and (key not in found or shown.startswith("+")):  # prefer "+14805550100" over "14805550100"
+                found[key] = shown
+        return list(found.values())
 
     def chat_for_handle(self, handle: str) -> str | None:
         """The most recently active one-to-one chat with a phone number or email, if there is one."""
@@ -174,6 +198,7 @@ class ChatDB:
                 db.row_factory = sqlite3.Row
                 message_columns = {row[1] for row in db.execute("PRAGMA table_info(message)")}
                 join_columns = {row[1] for row in db.execute("PRAGMA table_info(chat_message_join)")}
+                chat_columns = {row[1] for row in db.execute("PRAGMA table_info(chat)")}
             except sqlite3.OperationalError as e:
                 raise FullDiskAccessError(
                     f"can't read {self.path} ({e}). Give Full Disk Access to the app running Python: "
@@ -182,6 +207,10 @@ class ChatDB:
             if not message_columns:
                 raise FullDiskAccessError(f"{self.path} has no message table (is this Messages' chat.db?)")
             self._select = _message_select(message_columns)
+            if "last_addressed_handle" in chat_columns:
+                self._chat_address = "c.last_addressed_handle"
+            if "destination_caller_id" in message_columns:
+                self._message_address = "destination_caller_id"
             self._last_activity = (
                 "(SELECT max(j.message_date) FROM chat_message_join j WHERE j.chat_id = c.ROWID)"
                 if "message_date" in join_columns
@@ -227,6 +256,7 @@ class ChatDB:
                     reaction=parse_reaction(
                         row["associated_message_type"], row["associated_message_guid"], row["associated_message_emoji"]
                     ),
+                    address=display_address(row["destination_caller_id"]),
                     attachments=attachments.get(row["rowid"], ()),
                 )
             )
@@ -258,7 +288,7 @@ def _message_select(columns: set[str]) -> str:
     return (
         "SELECT m.ROWID AS rowid, m.guid, m.text, m.attributedBody, m.is_from_me, m.date, m.service,"
         f" m.cache_has_attachments, {column('associated_message_guid')}, {column('associated_message_type')},"
-        f" {column('associated_message_emoji')}, {column('thread_originator_guid')},"
+        f" {column('associated_message_emoji')}, {column('thread_originator_guid')}, {column('destination_caller_id')},"
         " h.id AS sender, c.guid AS chat_guid, c.display_name AS chat_name, c.style AS chat_style"
         " FROM message m"
         " LEFT JOIN handle h ON h.ROWID = m.handle_id"

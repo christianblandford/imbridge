@@ -15,6 +15,10 @@ First release.
   (which needs a person at a terminal). Sends are rate-limited to 10 a minute per chat and 30 in total, across every
   imbridge process on the Mac.
 - Chats can be named by a group's display name wherever a chat is expected; a name several chats share is refused.
+- `IMBridge(address=...)` (or `IMBRIDGE_ADDRESS`, or `--address`) says which of your own addresses a program is, for
+  Apple IDs with several numbers: it only sees messages sent to that address and won't send in chats on another
+  (`WrongAddress`). With no address set and messages arriving at several of your phone numbers, imbridge refuses
+  to read or send (`AddressNotChosen`), including when a second number first appears mid-stream.
 - The `imbridge` command: `doctor`, `start`, `allow`, `disallow`, `allowed`, `send`, `reply`, `react`, `chats`,
   `history`, `watch`.
 - The helper is BlueBubbles' Private API helper (pinned commit) plus four patches: any-emoji tapbacks, a fix for the
