@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.1 (unreleased)
+## 0.4.1 (2026-09-26)
 
 - **Fix:** `cancel_scheduled()` could report a Send Later message cancelled, and its row disappear, while the message
   still went out at its time: a cancel sent while the message is still on its way to Apple's servers
