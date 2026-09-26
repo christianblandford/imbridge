@@ -1,0 +1,143 @@
+imbridge stickers: send-sticker {chatGuid, filePath, stickerId, stickerHash, label?, selectedMessageGuid?, partIndex?}
+sends an image as a sticker. The file transfer is marked as one before it's registered with the daemon (isSticker,
+stickerUserInfo and attributionInfo naming Messages' own UserGenerated sticker extension, as the stickers you make in
+Messages carry), then sent on its own, or stuck onto a message part: associated type 1000 on "p:N/GUID" with that
+part's range and {eogcd: 3}, centered at half size. Dispatched through the chat registry.
+
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+index b093a2c..81431e3 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
++++ b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+@@ -245,6 +245,119 @@ static void IMBDispatch(IMChat *chat, IMMessage *message) {
+     }
+ }
+ 
++// imbridge: stickers. A sticker is an image transfer marked as one (isSticker, plus sticker and attribution info naming
++// the extension behind Messages' own "make a sticker"), sent on its own or stuck onto a message part: associated type
++// 1000 on "p:N/GUID" with that part's range, as Messages does for peel-and-stick. The marks go on before the transfer
++// is registered with the daemon, which is what sends them along.
++static NSString *const IMBUserStickers =
++    @"com.apple.messages.MSMessageExtensionBalloonPlugin:0000000000:com.apple.Stickers.UserGenerated.MessagesExtension";
++
++static IMFileTransfer *IMBPrepareSticker(NSURL *file, NSDictionary *stickerInfo, NSDictionary *attribution) {
++    IMFileTransferCenter *center = [IMFileTransferCenter sharedInstance];
++    NSString *guid = [center guidForNewOutgoingTransferWithLocalURL:file];
++    IMFileTransfer *transfer = [center transferForGUID:guid];
++    if (transfer == nil) {
++        return nil;
++    }
++    NSString *persistentPath = [[IMDPersistentAttachmentController sharedInstance]
++        _persistentPathForTransfer:transfer filename:[file lastPathComponent] highQuality:TRUE chatGUID:nil
++               storeAtExternalPath:TRUE];
++    if (persistentPath) {
++        NSURL *persistentURL = [NSURL fileURLWithPath:persistentPath];
++        [[NSFileManager defaultManager] createDirectoryAtURL:[persistentURL URLByDeletingLastPathComponent]
++                                 withIntermediateDirectories:TRUE attributes:nil error:nil];
++        if ([[NSFileManager defaultManager] copyItemAtURL:file toURL:persistentURL error:nil]) {
++            [center retargetTransfer:guid toPath:persistentPath];
++            transfer.localURL = persistentURL;
++        }
++    }
++    ((void (*)(id, SEL, BOOL))objc_msgSend)(transfer, NSSelectorFromString(@"setIsSticker:"), YES);
++    ((void (*)(id, SEL, id))objc_msgSend)(transfer, NSSelectorFromString(@"setStickerUserInfo:"), stickerInfo);
++    ((void (*)(id, SEL, id))objc_msgSend)(transfer, NSSelectorFromString(@"setAttributionInfo:"), attribution);
++    [center registerTransferWithDaemon:guid];
++    return transfer;
++}
++
++static void IMBSendSticker(IMChat *chat, NSDictionary *data, NSString *transaction) {
++    id path = data[@"filePath"], sid = data[@"stickerId"], shash = data[@"stickerHash"], label = data[@"label"];
++    id target = data[@"selectedMessageGuid"];
++    if (![path isKindOfClass:[NSString class]] || ![sid isKindOfClass:[NSString class]]
++            || ![shash isKindOfClass:[NSString class]]) {
++        IMBReply(transaction, @{@"error": @"A sticker needs filePath, stickerId and stickerHash"});
++        return;
++    }
++    BOOL placed = [target isKindOfClass:[NSString class]] && [target length] > 0;
++    NSInteger part = [data[@"partIndex"] isKindOfClass:[NSNumber class]] ? [data[@"partIndex"] integerValue] : 0;
++    NSMutableDictionary *info = [@{@"pid": IMBUserStickers, @"shash": shash, @"sid": sid, @"stickerEffectType": @0,
++                                   @"suri": @"sticker:///user/identifier/"} mutableCopy];
++    NSMutableDictionary *attribution = [@{@"accessl": [label isKindOfClass:[NSString class]] ? label : @"",
++                                          @"bundle-id": IMBUserStickers, @"name": @"Stickers"} mutableCopy];
++    if (placed) {  // where on the bubble it sits: centered, at half size
++        [info addEntriesFromDictionary:@{@"safi": @0, @"sai": @"0", @"sli": @"0", @"spv": @0, @"spw": @"163.73095703",
++                                         @"sro": @"0.00000000", @"ssa": @"0.50000000", @"sxs": @"0.50000000",
++                                         @"sys": @"0.50000000"}];
++        attribution[@"pgens"] = @1;
++    } else {
++        attribution[@"pgenp"] = @YES;
++    }
++    @try {
++        NSURL *file = [NSURL fileURLWithPath:path];
++        IMFileTransfer *transfer = IMBPrepareSticker(file, info, attribution);
++        NSString *transferGuid = [transfer guid];
++        if (transferGuid == nil) {
++            IMBReply(transaction, @{@"error": @"Couldn't prepare the sticker"});
++            return;
++        }
++        NSMutableAttributedString *body = [[NSMutableAttributedString alloc] initWithString:@"￼"];
++        [body addAttributes:@{@"__kIMBaseWritingDirectionAttributeName": @"-1",
++                              @"__kIMFileTransferGUIDAttributeName": transferGuid,
++                              @"__kIMFilenameAttributeName": [file lastPathComponent],
++                              @"__kIMMessagePartAttributeName": @0} range:NSMakeRange(0, 1)];
++        if (!placed) {
++            IMMessage *sticker = [[IMMessage alloc] initWithSender:nil time:nil text:body messageSubject:nil
++                                                 fileTransferGUIDs:@[transferGuid] flags:0x100005 error:nil guid:nil
++                                                           subject:nil balloonBundleID:nil payloadData:nil
++                                             expressiveSendStyleID:nil];
++            IMBDispatch(chat, sticker);
++            IMBReply(transaction, @{@"identifier": [sticker guid] ?: @""});
++            return;
++        }
++        [[IMChatHistoryController sharedInstance] loadMessageWithGUID:target completionBlock:^(IMMessage *message) {
++            @try {
++                IMMessageItem *messageItem = (IMMessageItem *)message._imMessageItem;
++                NSObject *items = messageItem._newChatItems;
++                NSArray *parts = [items isKindOfClass:[NSArray class]] ? (NSArray *)items : (items ? @[items] : @[]);
++                IMMessagePartChatItem *item = nil;
++                for (id candidate in parts) {
++                    if ([candidate respondsToSelector:@selector(index)]
++                            && [candidate respondsToSelector:@selector(messagePartRange)]
++                            && [(IMMessagePartChatItem *)candidate index] == part) {
++                        item = (IMMessagePartChatItem *)candidate;
++                        break;
++                    }
++                }
++                if (message == nil || item == nil) {
++                    IMBReply(transaction, @{@"error": @"Couldn't find that message to stick the sticker on"});
++                    return;
++                }
++                NSString *associated = [NSString stringWithFormat:@"p:%ld/%@", (long)part, target];
++                IMMessage *sticker = [[IMMessage alloc] initWithSender:nil time:nil text:body messageSubject:nil
++                                                     fileTransferGUIDs:@[transferGuid] flags:0x5 error:nil guid:nil
++                                                               subject:nil associatedMessageGUID:associated
++                                                 associatedMessageType:1000
++                                                associatedMessageRange:[item messagePartRange]
++                                                    messageSummaryInfo:@{@"eogcd": @3, @"ust": @YES}];
++                IMBDispatch(chat, sticker);
++                IMBReply(transaction, @{@"identifier": [sticker guid] ?: @""});
++            } @catch (NSException *exception) {
++                IMBReply(transaction, @{@"error": [NSString stringWithFormat:@"Couldn't send the sticker: %@", exception.reason]});
++            }
++        }];
++    } @catch (NSException *exception) {
++        IMBReply(transaction, @{@"error": [NSString stringWithFormat:@"Couldn't send the sticker: %@", exception.reason]});
++    }
++}
++
+ // imbridge: Send Later (macOS 15+). A scheduled message is built by the factory made for it, which takes the delivery
+ // date alone; building one by hand states the time twice, and IMCore has been seen honouring one and not the other
+ // (sending at once, or filing it in your own conversation). A chat that can't schedule sends at once, so ask first.
+@@ -713,6 +826,12 @@ -(void) handleServerEvent: (NSString*)event data: (NSDictionary*)data transactio
+                 [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction}];
+             }
+         }
++    // imbridge: send a sticker, on its own or stuck onto a message
++    } else if ([event isEqualToString:@"send-sticker"]) {
++        IMChat *chat = [[BlueBubblesHelper sharedInstance] getIMChatFromGuid:data[@"chatGuid"] transaction:transaction];
++        if (chat != nil) {
++            IMBSendSticker(chat, data, transaction);
++        }
+     // imbridge: schedule a message (Send Later)
+     } else if ([event isEqualToString:@"send-later"]) {
+         IMChat *chat = [[BlueBubblesHelper sharedInstance] getIMChatFromGuid:data[@"chatGuid"] transaction:transaction];

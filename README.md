@@ -193,6 +193,7 @@ async with IMBridge(allow=["+15551234567"]) as im:
     await chat.react(guid, "🔥", remove=True)
     await chat.send_file("chart.png")                     # a photo, GIF, video or document
     await chat.send_file("chart.png", reply_to=guid)      # ...as an inline reply
+    await chat.send_sticker("party.png", on=guid)         # a sticker, stuck onto a message (or on its own)
     later = await chat.send_later("Happy birthday! 🎂", datetime(2026, 10, 3, 9, 0))  # Messages' Send Later
     chat.scheduled()                                      # what's waiting; chat.cancel_scheduled(later) takes it back
     poll = await chat.send_poll(["Pizza", "Sushi"], question="Lunch?")
@@ -235,6 +236,11 @@ animated text effect (`TEXT_EFFECTS`: big, small, shake, nod, explode, ripple, b
 stretch), or `Span("Sam", mention="+15551234567")` to @mention someone in the chat. An unknown effect or a mention of
 someone outside the chat is refused before anything is sent (Messages would quietly send plain text). iOS 18 and
 macOS 15 or later show formatting; older devices get the plain text. A new conversation starts with plain text.
+
+**Stickers.** `send_sticker(path, on=None, label=None)` sends an image as a sticker, the way Messages sends the
+stickers you make from photos: on its own, or stuck onto one of the chat's messages with `on`. A PNG or HEIC with a
+transparent background looks like one. Incoming stickers are attachments with `is_sticker`; one stuck onto a
+message is a `reaction` of kind `sticker`, and one used as a tapback is kind `sticker_tapback`.
 
 **Send Later.** `send_later(text, at)` schedules a message with Messages' own Send Later: it goes out at the start of
 that minute (from a minute to 14 days ahead) even if your program, or Messages, isn't running then. The allowlist
@@ -321,6 +327,7 @@ imbridge disallow CHAT | --any
 imbridge allowed
 imbridge send +15551234567 "hello" [--reply-to GUID] [--effect confetti] [--text-effect big]
 imbridge send-file +15551234567 photo.jpg [--reply-to GUID]
+imbridge send-sticker +15551234567 party.png [--on GUID] [--label "a party hat"]
 imbridge send-later +15551234567 "Happy birthday!" --at "2026-10-03 09:00"
 imbridge scheduled [--chat CHAT] [--json]            # what's waiting in Send Later
 imbridge cancel GUID                                 # cancel a message waiting in Send Later

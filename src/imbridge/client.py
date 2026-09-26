@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import hashlib
 import json
 import logging
 import os
@@ -48,6 +49,7 @@ EDIT_WINDOW, MAX_EDITS, UNSEND_WINDOW = 15 * 60, 5, 2 * 60
 CHANGE_WINDOW = EDIT_WINDOW + 5 * 60
 CANCEL_CHECK = 10.0  # seconds to wait for a Send Later message to be held, and then to be gone once cancelled
 SCHEDULE_HELD = 2  # message.schedule_state once Apple's servers hold a Send Later message (1 on the way there)
+STICKER_TYPES = (".png", ".heic", ".heics", ".gif", ".jpg", ".jpeg", ".webp")
 MAX_POLL_BYTES = 4096  # a poll's options, as Messages encodes them, must fit in this
 
 
@@ -233,6 +235,12 @@ class Chat:
         """This chat's messages as they're edited or unsent, from now on (see IMBridge.changes)."""
         async for message in self._bridge._changes(self.guid, include_from_me):
             yield message
+
+    async def send_sticker(
+        self, path: str | Path, *, on: Message | str | None = None, label: str | None = None
+    ) -> str:
+        """Send an image as a sticker, alone or stuck onto one of this chat's messages: see IMBridge.send_sticker."""
+        return await self._bridge.send_sticker(self.guid, path, on=on, label=label)
 
     async def send_later(self, text: str, at: datetime) -> str:
         """Schedule a message for later in this chat: see IMBridge.send_later."""
@@ -548,6 +556,50 @@ class IMBridge:
         if not mine:
             raise ValueError(f"can't tell which of your addresses {chat_guid} is on; set address= to say")
         return display_address(mine)
+
+    async def send_sticker(
+        self, chat: str, path: str | Path, *, on: Message | str | None = None, label: str | None = None
+    ) -> str:
+        """Send an image as a sticker: on its own, or stuck onto one of the chat's messages (`on`, a Message or GUID).
+
+        A PNG or HEIC with a transparent background looks like one. label is what VoiceOver reads out. It's copied
+        into Messages' Attachments folder first, like send_file. Returns the sticker's GUID.
+        """
+        source = Path(path).expanduser()
+        if not source.is_file():
+            raise FileNotFoundError(f"no file at {source}")
+        if source.suffix.lower() not in STICKER_TYPES:
+            raise ValueError(f"a sticker is an image: {', '.join(STICKER_TYPES)}")
+        chat_guid = self.resolve_chat(chat)
+        target, part = None, 0
+        if on is not None:
+            target, on_chat, part = await self._target(on, None)
+            if on_chat != chat_guid:
+                raise WrongChat(f"message {target} is in {on_chat}, not in {chat_guid}")
+        self._check_send(chat_guid)
+        self._guard.record_send(chat_guid)
+        folder = config.OUTGOING / uuid.uuid4().hex
+        folder.mkdir(parents=True)
+        staged = folder / source.name
+        shutil.copyfile(source, staged)
+        request = {
+            "chatGuid": chat_guid,
+            "filePath": str(staged),
+            "stickerId": str(uuid.uuid4()).upper(),
+            "stickerHash": hashlib.sha256(staged.read_bytes()).hexdigest()[:16],
+            "label": label or "",
+            "selectedMessageGuid": target,
+            "partIndex": part,
+        }
+        try:
+            result = await self._request("send-sticker", request)
+        except HelperError:
+            shutil.rmtree(folder, ignore_errors=True)  # refused, so nothing refers to the copy
+            raise
+        sent = result.get("identifier")
+        self._recent.append((time.monotonic(), chat_guid, f"reaction:{target}:sticker:False" if target else "text:"))
+        self._remember(sent, chat_guid)
+        return sent
 
     async def send_later(self, chat: str, text: str, at: datetime) -> str:
         """Schedule a message with Messages' Send Later; returns its GUID.

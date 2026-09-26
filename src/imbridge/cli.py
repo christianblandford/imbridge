@@ -68,6 +68,9 @@ def _print_poll(results: PollResults, as_json: bool) -> None:
         print(f"  {option['votes']:>3}  {option['text']}{voters}")
 
 
+SENDING = ("send", "send-file", "send-sticker", "send-later", "cancel", "send-poll", "vote", "reply", "react")
+
+
 def _when(value: str) -> datetime:
     try:
         return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
@@ -212,6 +215,8 @@ async def _send(args: argparse.Namespace) -> int:
             guid = await im.send(args.chat, text, reply_to=args.reply_to, effect=args.effect)
         elif args.command == "send-file":
             guid = await im.send_file(args.chat, args.path, reply_to=args.reply_to)
+        elif args.command == "send-sticker":
+            guid = await im.send_sticker(args.chat, args.path, on=args.on, label=args.label)
         elif args.command == "send-later":
             guid = await im.send_later(args.chat, args.text, _when(args.at))
         elif args.command == "cancel":
@@ -274,6 +279,12 @@ def _parser() -> argparse.ArgumentParser:
     send_file.add_argument("chat", help="phone number, email, group name, or chat GUID")
     send_file.add_argument("path")
     send_file.add_argument("--reply-to", metavar="GUID", help="send it as an inline reply to this message")
+
+    sticker = commands.add_parser("send-sticker", parents=[mine], help="send an image as a sticker")
+    sticker.add_argument("chat", help="phone number, email, group name, or chat GUID")
+    sticker.add_argument("path", help="a PNG, HEIC, GIF, JPEG or WebP (transparent backgrounds look best)")
+    sticker.add_argument("--on", metavar="GUID", help="stick it onto this message instead of sending it on its own")
+    sticker.add_argument("--label", help="what VoiceOver reads out for it")
 
     later = commands.add_parser("send-later", parents=[mine], help="schedule a message with Send Later")
     later.add_argument("chat", help="phone number, email, group name, or chat GUID")
@@ -346,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
             return _allowed()
         if args.command == "start":
             return asyncio.run(_start(args))
-        if args.command in ("send", "send-file", "send-later", "cancel", "send-poll", "vote", "reply", "react"):
+        if args.command in SENDING:
             return asyncio.run(_send(args))
         if args.command == "watch":
             return asyncio.run(_watch(args))

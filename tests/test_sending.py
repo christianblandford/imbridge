@@ -1,6 +1,7 @@
 """What imbridge asks the helper inside Messages to do, checked against a stand-in that records every request."""
 
 import asyncio
+import re
 import sqlite3
 from pathlib import Path
 
@@ -196,3 +197,30 @@ def test_another_program_holding_the_helper_is_reported_before_anything_is_sent(
             await other.wait_closed()
 
     asyncio.run(scenario())
+
+
+def test_sending_a_sticker(chat_db, tmp_path):
+    image = tmp_path / "dot.png"
+    image.write_bytes(b"\x89PNG not really")
+    guid, (request,) = run(chat_db, lambda im: im.chat(ALEX).send_sticker(image, label="an orange dot"), allow=[ALEX])
+    data = request["data"]
+    assert request["action"] == "send-sticker" and guid == "SENT-1"
+    assert (data["chatGuid"], data["label"], data["selectedMessageGuid"]) == (ALEX, "an orange dot", None)
+    assert request["file_existed"] and data["filePath"].startswith(str(config.OUTGOING))  # where Messages can read it
+    assert re.fullmatch(r"[0-9A-F-]{36}", data["stickerId"]) and re.fullmatch(r"[0-9a-f]{16}", data["stickerHash"])
+    _, (request,) = run(chat_db, lambda im: im.chat(ALEX).send_sticker(image, on="M1"), allow=[ALEX])
+    assert (request["data"]["selectedMessageGuid"], request["data"]["partIndex"]) == ("M1", 0)  # stuck onto M1
+
+
+def test_stickers_are_checked_before_anything_is_sent(chat_db, tmp_path):
+    image, text = tmp_path / "dot.png", tmp_path / "notes.txt"
+    image.write_bytes(b"\x89PNG")
+    text.write_text("not an image")
+    log = []
+    with pytest.raises(WrongChat):  # M1 is Alex's message, not the Crew's
+        run(chat_db, lambda im: im.chat(CREW).send_sticker(image, on="M1"), None, log, allow=[CREW])
+    with pytest.raises(ValueError, match="a sticker is an image"):
+        run(chat_db, lambda im: im.send_sticker(ALEX, text), None, log, allow=[ALEX])
+    with pytest.raises(SendNotAllowed):
+        run(chat_db, lambda im: im.send_sticker(ALEX, image), None, log)
+    assert log == []
