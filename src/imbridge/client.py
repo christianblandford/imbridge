@@ -46,7 +46,8 @@ ECHO_WINDOW = 60.0
 EDIT_WINDOW, MAX_EDITS, UNSEND_WINDOW = 15 * 60, 5, 2 * 60
 # So only recent messages can change; the changes stream watches this far back.
 CHANGE_WINDOW = EDIT_WINDOW + 5 * 60
-CANCEL_CHECK = 10.0  # seconds to wait for chat.db to show a cancelled Send Later message gone
+CANCEL_CHECK = 10.0  # seconds to wait for a Send Later message to be held, and then to be gone once cancelled
+SCHEDULE_HELD = 2  # message.schedule_state once Apple's servers hold a Send Later message (1 on the way there)
 MAX_POLL_BYTES = 4096  # a poll's options, as Messages encodes them, must fit in this
 
 
@@ -588,6 +589,15 @@ class IMBridge:
         if found is None or not found.is_from_me or found.scheduled_for is None or found.chat_guid is None:
             raise ValueError(f"{guid} isn't a message of yours waiting to be sent later (it may have gone out)")
         self._check_send(found.chat_guid)  # retracting reaches Messages like anything else: allowed chats only
+        # A cancel sent before Apple's servers hold the message (schedule_state 2) is lost, and the message still
+        # goes out at its time, although its row disappears here. So wait for that first.
+        deadline = time.monotonic() + CANCEL_CHECK
+        while await asyncio.to_thread(self.db.schedule_state, guid) != SCHEDULE_HELD:
+            if time.monotonic() >= deadline:
+                raise SendLaterFailed(
+                    f"Apple's servers don't hold {guid} yet, and cancelling before they do doesn't stick; try again"
+                )
+            await asyncio.sleep(0.2)
         await self._request("cancel-scheduled", {"chatGuid": found.chat_guid, "messageGuid": guid})
         deadline = time.monotonic() + CANCEL_CHECK
         while (current := await asyncio.to_thread(self.db.message, guid)) and current.scheduled_for:

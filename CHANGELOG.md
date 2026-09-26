@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1 (unreleased)
+
+- **Fix:** `cancel_scheduled()` could report a Send Later message cancelled, and its row disappear, while the message
+  still went out at its time: a cancel sent while the message is still on its way to Apple's servers
+  (`schedule_state` 1) is lost. It now waits until the servers hold the message (state 2), which takes well under a
+  second, and raises `SendLaterFailed` rather than cancel too early. Verified live: cancelled on its way, the message
+  was delivered; cancelled the moment it was held, it stayed cancelled.
+
 ## 0.4.0 (2026-09-26)
 
 - Send Later: `chat.send_later(text, at)` schedules a message with Messages' own Send Later, to the minute and up to
