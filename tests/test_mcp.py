@@ -120,3 +120,10 @@ def test_read_poll(chat_db):
     shown = {message["guid"]: message for message in call(server, "read_messages", chat=CREW, limit=50)}
     assert shown["P1"]["poll"] == {"options": ["Pizza", "Sushi"]}
     assert shown["V5"]["vote"] == {"in_poll": "U1", "took_back": True}
+
+
+def test_text_effects_are_checked_before_sending(chat_db):
+    server = server_for(chat_db, allow=[ALEX])
+    with pytest.raises(ToolError, match="isn't a text effect"):
+        asyncio.run(server.call_tool("send_message", {"chat": ALEX, "text": "hi", "text_effect": "wobble"}))
+    assert "explode" in {tool.name: tool for tool in asyncio.run(server.list_tools())}["send_message"].description

@@ -9,6 +9,7 @@ from .guard import ANY_CHAT, NewContact, RateLimited, SendNotAllowed
 from .polls import Poll, PollOption, PollResults, PollVote
 from .protocol import HelperError, HelperNotConnected, HelperUnauthorized
 from .reactions import CLASSIC_TAPBACKS, Reaction
+from .richtext import TEXT_EFFECTS, Span
 
 try:
     __version__ = version("imbridge")
@@ -43,5 +44,7 @@ __all__ = [
     "RateLimited",
     "Reaction",
     "SendNotAllowed",
+    "Span",
+    "TEXT_EFFECTS",
     "WrongChat",
 ]

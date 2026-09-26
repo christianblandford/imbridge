@@ -186,6 +186,7 @@ async with IMBridge(address="+15550002222", allow=["+15551234567"]) as im:   # o
 async with IMBridge(allow=["+15551234567"]) as im:
     chat = im.chat("+15551234567")                        # or an email, a group's name, or a chat GUID
     guid = await chat.send("hello", effect="confetti")    # returns the new message's GUID
+    await chat.send(["Meeting ", Span("moved", bold=True), " to ", Span("3pm", effect="big")])
     await chat.reply(guid, "replying inline")             # a Message or a message GUID
     await chat.react(guid, "love")                        # love, like, dislike, laugh, emphasize, question
     await chat.react(guid, "🔥")                          # ...or any emoji
@@ -223,6 +224,14 @@ A chat has `guid`, `name`, `is_group`, `participants` (everyone but the address 
 `send_file`, `reply`, `react`, `edit`, `unsend`, `typing` and `mark_read` that take a chat or message GUID directly;
 the same allowlist and limits apply. iMessage keeps one tapback per person per message, so a new tapback replaces your
 previous one.
+
+**Formatting.** Besides a plain string, `send()` and `reply()` take a list of strings and `Span`s
+(`from imbridge import Span`):
+`Span(text, bold=True, italic=True, underline=True, strikethrough=True)`, `Span(text, effect="explode")` for an
+animated text effect (`TEXT_EFFECTS`: big, small, shake, nod, explode, ripple, bloom, jitter, somersault, squish,
+stretch), or `Span("Sam", mention="+15551234567")` to @mention someone in the chat. An unknown effect or a mention of
+someone outside the chat is refused before anything is sent (Messages would quietly send plain text). iOS 18 and
+macOS 15 or later show formatting; older devices get the plain text. A new conversation starts with plain text.
 
 **Starting conversations.** `im.send()` to a phone number or email you have no conversation with starts one, over
 iMessage if they have it and SMS otherwise. They have to be allowed: `IMBridge(allow=[NewContact("+15557654321")])`
@@ -298,7 +307,7 @@ imbridge start                         # load the helper into Messages
 imbridge allow CHAT | --any            # let imbridge send to a chat (asks you to confirm)
 imbridge disallow CHAT | --any
 imbridge allowed
-imbridge send +15551234567 "hello" [--reply-to GUID] [--effect confetti]   # someone new: starts a conversation
+imbridge send +15551234567 "hello" [--reply-to GUID] [--effect confetti] [--text-effect big]
 imbridge send-file +15551234567 photo.jpg [--reply-to GUID]
 imbridge send-poll +15551234567 Pizza Sushi [--question "Lunch?"]
 imbridge vote GUID Pizza [--remove]                  # the poll's GUID; keeps your other choices
@@ -339,7 +348,7 @@ itself.
 | `read_messages` | a chat's latest messages |
 | `check_messages` | messages since the last check; `wait_seconds` waits for a reply |
 | `read_poll` | a poll's question, options and votes |
-| `send_message` | a new message, optionally with an effect; or a new conversation with someone the user allowed |
+| `send_message` | a new message, optionally with a bubble or text effect; or a new conversation with someone the user allowed |
 | `reply` | an inline reply to a message |
 | `react` | a tapback with any emoji or a classic |
 | `send_poll`, `vote` | send a poll (and its question), or vote in one |

@@ -32,6 +32,7 @@ from .guard import AnyChat, SendGuard
 from .polls import PollResults
 from .protocol import HelperError, HelperNotConnected, HelperServer, HelperUnauthorized
 from .reactions import parse_target, reaction_label, reaction_type
+from .richtext import Span, Text, parts, plain, spans
 
 log = logging.getLogger(__name__)
 
@@ -184,7 +185,8 @@ class Chat:
         """This chat's latest messages, oldest first."""
         return self._bridge.history(self.guid, limit, include_events=include_events)
 
-    async def send(self, text: str, *, effect: str | None = None, subject: str | None = None) -> str:
+    async def send(self, text: Text, *, effect: str | None = None, subject: str | None = None) -> str:
+        """Send text to this chat: a string, or strings and Spans for formatting and mentions."""
         return await self._bridge.send(self.guid, text, effect=effect, subject=subject)
 
     async def send_file(self, path: str | Path, *, reply_to: Message | str | None = None) -> str:
@@ -193,7 +195,7 @@ class Chat:
         target = _target_ref(*await self._own(reply_to)) if reply_to is not None else None
         return await self._bridge.send_file(self.guid, path, reply_to=target)
 
-    async def reply(self, message: Message | str, text: str) -> str:
+    async def reply(self, message: Message | str, text: Text) -> str:
         """Reply inline to one of this chat's messages (a Message or its GUID)."""
         guid, part = await self._own(message)
         return await self._bridge.send(self.guid, text, reply_to=_target_ref(guid, part))
@@ -357,13 +359,16 @@ class IMBridge:
     async def send(
         self,
         chat: str,
-        text: str,
+        text: Text,
         *,
         reply_to: str | None = None,
         effect: str | None = None,
         subject: str | None = None,
     ) -> str:
         """Send text to an allowed chat: a chat GUID, a group's name, or a phone number or email.
+
+        text is a string, or a sequence of strings and Spans for bold, italic, underline, strikethrough, animated
+        text effects and @mentions (see richtext.py).
 
         A phone number (in international form, +15551234567) or email with no conversation yet starts one, over
         iMessage if they have it and SMS otherwise. Messages decides which of your addresses that goes out from (its
@@ -384,15 +389,18 @@ class IMBridge:
                         "like +15551234567"
                     ) from None
                 raise
-            return await self._start_chat(handle, text, effect=effect, subject=subject)
+            if spans(text):
+                raise ValueError("start a conversation with plain text; formatting can follow") from None
+            return await self._start_chat(handle, plain(text), effect=effect, subject=subject)
         self._check_send(chat_guid)
+        self._check_mentions(chat_guid, spans(text))
         self._guard.record_send(chat_guid)
         return await self._send_text(chat_guid, text, reply_to=reply_to, effect=effect, subject=subject)
 
     async def _send_text(
         self,
         chat_guid: str,
-        text: str,
+        text: Text,
         *,
         reply_to: str | None = None,
         effect: str | None = None,
@@ -400,21 +408,20 @@ class IMBridge:
     ) -> str:
         # Only once the chat has passed _check_send and the send is counted (record_send).
         guid, part = parse_target(reply_to) if reply_to else (None, 0)
-        result = await self._request(
-            "send-message",
-            {
-                "chatGuid": chat_guid,
-                "subject": subject,
-                "message": text,
-                "attributedBody": None,
-                "effectId": EFFECTS.get(effect, effect) if effect else None,
-                "selectedMessageGuid": guid,
-                "partIndex": part,
-                "ddScan": 0,
-            },
-        )
+        common = {
+            "chatGuid": chat_guid,
+            "subject": subject,
+            "effectId": EFFECTS.get(effect, effect) if effect else None,
+            "selectedMessageGuid": guid,
+            "partIndex": part,
+        }
+        if formatted := spans(text):
+            result = await self._request("send-multipart", {**common, "parts": parts(formatted)})
+        else:
+            message = {"message": plain(text), "attributedBody": None, "ddScan": 0}
+            result = await self._request("send-message", {**common, **message})
         sent = result.get("identifier")
-        self._recent.append((time.monotonic(), chat_guid, f"text:{text.strip()}"))
+        self._recent.append((time.monotonic(), chat_guid, f"text:{plain(text).strip()}"))
         self._remember(sent, chat_guid)
         return sent
 
@@ -492,6 +499,16 @@ class IMBridge:
         )
         self._recent.append((time.monotonic(), chat_guid, f"vote:{results.session}:{','.join(sorted(choice))}"))
         return result.get("identifier")
+
+    def _check_mentions(self, chat_guid: str, formatted: list[Span] | None) -> None:
+        """Only people in a chat can be mentioned there."""
+        mentioned = [span.mention for span in formatted or () if span.mention]
+        if mentioned:
+            info = self.db.chat(chat_guid)
+            members = {address_key(handle) for handle in (info.participants if info else ())}
+            for handle in mentioned:
+                if address_key(handle) not in members:
+                    raise ValueError(f"{handle} isn't in {chat_guid}, so they can't be mentioned there")
 
     def _my_handle(self, chat_guid: str) -> str:
         """Which of your addresses you are in a chat: how Messages names you in the polls and votes you send there."""
@@ -604,7 +621,7 @@ class IMBridge:
                 self._chat_of.clear()
             self._chat_of[sent] = chat_guid
 
-    async def reply(self, message: Message | str, text: str, *, chat: str | None = None) -> str:
+    async def reply(self, message: Message | str, text: Text, *, chat: str | None = None) -> str:
         """Reply inline (threaded) to a message in an allowed chat: a Message, or a message GUID."""
         guid, chat_guid, part = await self._target(message, chat)
         return await self.send(chat_guid, text, reply_to=_target_ref(guid, part))

@@ -15,6 +15,11 @@
   sent. `imbridge send-poll`, `imbridge vote`, and the MCP tools `send_poll` and `vote` do the same, all through the
   allowlist, address and rate-limit checks.
 - The helper gains `send-poll` and `send-poll-vote` (helper/patches/0005-polls.patch).
+- Formatting and mentions, sent: `send()` and `reply()` take a list of strings and `Span`s for bold, italic,
+  underline, strikethrough, animated text effects (`TEXT_EFFECTS`, by the names in Messages' Text Effects menu) and
+  @mentions. Unknown effects, which Messages would silently send as plain text, and mentions of people outside the
+  chat are refused before anything is sent. `imbridge send`/`reply --text-effect` and the MCP tools' `text_effect`
+  animate a whole message.
 
 ## 0.3.0 (2026-09-26)
 

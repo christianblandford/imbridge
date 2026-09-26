@@ -16,6 +16,7 @@ from .guard import ANY_LINE, RateLimited, SendNotAllowed, read_allowed, write_al
 from .polls import PollResults
 from .protocol import HelperError
 from .reactions import CLASSIC_TAPBACKS
+from .richtext import TEXT_EFFECTS, Span
 
 _EVENTS = {
     "added": "added {person}",
@@ -189,8 +190,11 @@ async def _start(args: argparse.Namespace) -> int:
 
 async def _send(args: argparse.Namespace) -> int:
     async with _bridge(args) as im:
+        text = getattr(args, "text", "")
+        if getattr(args, "text_effect", None):
+            text = [Span(text, effect=args.text_effect)]
         if args.command == "send":
-            guid = await im.send(args.chat, args.text, reply_to=args.reply_to, effect=args.effect)
+            guid = await im.send(args.chat, text, reply_to=args.reply_to, effect=args.effect)
         elif args.command == "send-file":
             guid = await im.send_file(args.chat, args.path, reply_to=args.reply_to)
         elif args.command == "send-poll":
@@ -199,7 +203,7 @@ async def _send(args: argparse.Namespace) -> int:
             guid = await (im.unvote if args.remove else im.vote)(args.poll, *args.options)
             guid = guid or "(no change: that was already your choice)"
         elif args.command == "reply":
-            guid = await im.reply(args.message, args.text)
+            guid = await im.reply(args.message, text)
         else:
             guid = await im.react(args.message, args.reaction, remove=args.remove)
     print(guid)
@@ -244,6 +248,7 @@ def _parser() -> argparse.ArgumentParser:
     send.add_argument("text")
     send.add_argument("--reply-to", metavar="GUID", help="send it as an inline reply to this message")
     send.add_argument("--effect", choices=sorted(EFFECTS), help="bubble or screen effect")
+    send.add_argument("--text-effect", choices=list(TEXT_EFFECTS), help="animate the text itself")
 
     send_file = commands.add_parser("send-file", parents=[mine], help="send a photo, GIF, video or document")
     send_file.add_argument("chat", help="phone number, email, group name, or chat GUID")
@@ -263,6 +268,7 @@ def _parser() -> argparse.ArgumentParser:
     reply = commands.add_parser("reply", parents=[mine], help="reply inline to a message in an allowed chat")
     reply.add_argument("message", metavar="GUID")
     reply.add_argument("text")
+    reply.add_argument("--text-effect", choices=list(TEXT_EFFECTS), help="animate the text itself")
 
     react = commands.add_parser(
         "react", parents=[mine], help="tapback a message in an allowed chat: a classic reaction or any emoji"

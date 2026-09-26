@@ -23,6 +23,7 @@ from .client import EFFECTS, Chat, EditLimit, IMBridge
 from .guard import RateLimited, SendNotAllowed
 from .protocol import HelperError
 from .reactions import CLASSIC_TAPBACKS
+from .richtext import TEXT_EFFECTS, Span
 
 INSTRUCTIONS = """\
 These tools read and send iMessages on the user's Mac, through Messages.app.
@@ -171,19 +172,24 @@ def build_server(im: IMBridge) -> MCPServer:
         annotations=SENDS,
         description="Send a new message to an allowed chat, or start a conversation with a phone number (with its "
         "country code, like +15551234567) or email the user has allowed. Returns its guid. `effect` is an optional "
-        f"bubble or screen effect: {', '.join(EFFECTS)}.",
+        f"bubble or screen effect: {', '.join(EFFECTS)}. `text_effect` animates the text itself: "
+        f"{', '.join(TEXT_EFFECTS)}.",
     )
-    async def send_message(chat: str, text: str, effect: str | None = None) -> dict[str, Any]:
+    async def send_message(
+        chat: str, text: str, effect: str | None = None, text_effect: str | None = None
+    ) -> dict[str, Any]:
         try:
-            return {"guid": await im.send(chat, text, effect=effect)}
+            content = [Span(text, effect=text_effect)] if text_effect else text
+            return {"guid": await im.send(chat, content, effect=effect)}
         except Exception as error:
             raise _refusal(error) from error
 
     @server.tool(annotations=SENDS)
-    async def reply(message_guid: str, text: str) -> dict[str, Any]:
-        """Reply inline to a message (threaded under it, like swiping to reply). Returns the reply's guid."""
+    async def reply(message_guid: str, text: str, text_effect: str | None = None) -> dict[str, Any]:
+        """Reply inline to a message (threaded under it, like swiping to reply). Returns the reply's guid.
+        `text_effect` animates the text, as in send_message."""
         try:
-            return {"guid": await im.reply(message_guid, text)}
+            return {"guid": await im.reply(message_guid, [Span(text, effect=text_effect)] if text_effect else text)}
         except Exception as error:
             raise _refusal(error) from error
 
