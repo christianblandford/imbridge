@@ -114,3 +114,10 @@ def test_limits_are_shared_by_every_process():
     SendGuard(max_per_chat=2, clock=clock).record_send(ALEX)
     with pytest.raises(RateLimited):
         SendGuard(max_per_chat=2, clock=clock).record_send(ALEX)
+
+
+def test_people_are_matched_by_their_whole_number():
+    guard = SendGuard([NewContact("+447911123456")], resolve=no_conversations)
+    assert guard.allows_handle("+44 7911 123456")
+    assert not guard.allows_handle("+17911123456")  # same last 10 digits, a different person
+    assert not guard.allows("any;-;+17911123456")

@@ -101,6 +101,13 @@ def run_checks(dylib: Path | None = None) -> list[Check]:
         else:
             number = phones[0] if phones else "none yet"
             checks.append(Check("Your phone numbers", True, f"messages arrive at {number}"))
+        if broken := db.broken_chats():
+            checks.append(
+                Check("Broken conversations", False,
+                      f"Messages has a conversation with {', '.join(broken)}, an internal form of an address; it can "
+                      "take over your note-to-self chat, and texts sent into it fail",
+                      "Delete that conversation in Messages.")
+            )
     except FullDiskAccessError:
         checks.append(
             Check("Full Disk Access (reading chat.db)", False, "chat.db can't be opened",

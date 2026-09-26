@@ -7,7 +7,6 @@ binary itself for a background service). The database is opened read-only.
 from __future__ import annotations
 
 import plistlib
-import re
 import sqlite3
 import time
 from collections.abc import Iterable
@@ -16,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .addresses import address_key, display_address
+from .addresses import address_key, display_address, same_address
 from .config import CHAT_DB
 from .polls import POLL_TYPES, POLLS_BUNDLE, Poll, PollOption, PollResults, PollVote, fallback_text, parse_poll
 from .reactions import Reaction, parse_reaction
@@ -284,6 +283,15 @@ class ChatDB:
         )
         return display_address(rows[0][0]) if rows else None
 
+    def broken_chats(self) -> list[str]:
+        """One-to-one conversations addressed to an internal form of an address ("e:you@example.com"). IMCore can
+        create one when it misfiles a message, then treat it as your note-to-self chat; texts sent into it fail."""
+        rows = self._query(
+            f"SELECT chat_identifier FROM chat WHERE style != {GROUP_STYLE}"
+            " AND (lower(chat_identifier) LIKE 'e:%' OR lower(chat_identifier) LIKE 'p:%')"
+        )
+        return [row[0] for row in rows]
+
     def chat_for_handle(self, handle: str) -> str | None:
         """The most recently active one-to-one chat with a phone number or email, if there is one."""
         handle = handle.strip()
@@ -292,13 +300,9 @@ class ChatDB:
             f"SELECT c.guid, c.chat_identifier, {self._last_activity} AS last_date FROM chat c"
             f" WHERE c.style != {GROUP_STYLE} ORDER BY last_date DESC"
         )
-        if "@" in handle:
-            matches = [row for row in rows if (row["chat_identifier"] or "").lower() == handle.lower()]
-        else:
-            digits = re.sub(r"\D", "", handle)[-10:]
-            if len(digits) < 7:
-                return None
-            matches = [row for row in rows if re.sub(r"\D", "", row["chat_identifier"] or "").endswith(digits)]
+        # Only a chat with that very address: a phone number never matches an email or other identifier that
+        # happens to contain its digits (an MMS gateway or bounce address like "...-4805550100=mms.att.net@...").
+        matches = [row for row in rows if same_address(row["chat_identifier"], handle)]
         return matches[0]["guid"] if matches else None
 
     def chats_named(self, name: str) -> list[str]:
