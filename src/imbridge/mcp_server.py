@@ -19,7 +19,7 @@ from mcp.types import ToolAnnotations
 from . import __version__
 from .addresses import AddressNotChosen, WrongAddress
 from .chatdb import FullDiskAccessError, Message
-from .client import EFFECTS, Chat, IMBridge
+from .client import EFFECTS, Chat, EditLimit, IMBridge
 from .guard import RateLimited, SendNotAllowed
 from .protocol import HelperError
 from .reactions import CLASSIC_TAPBACKS
@@ -37,6 +37,7 @@ These tools read and send iMessages on the user's Mac, through Messages.app.
 
 READS = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 SENDS = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True)
+CHANGES = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True)
 MAX_WAIT = 55  # seconds; many MCP clients give up on a tool call after a minute
 
 
@@ -50,6 +51,10 @@ def _message(message: Message) -> dict[str, Any]:
     }
     if message.chat_name:
         item["chat_name"] = message.chat_name
+    if message.unsent_at:
+        item["unsent"] = True
+    elif message.edited_at:
+        item["edited"] = True
     if message.reply_to:
         item["reply_to"] = message.reply_to
     if reaction := message.reaction:
@@ -74,6 +79,8 @@ def _refusal(error: Exception) -> ToolError:
     """imbridge's errors, worded for a model: what happened, and what it should (not) do about it."""
     if isinstance(error, SendNotAllowed):
         advice = "Only the user can allow a chat, by running `imbridge allow <chat>` in their own terminal. Ask them."
+    elif isinstance(error, EditLimit):
+        advice = "iMessage won't allow it any more."
     elif isinstance(error, RateLimited):
         advice = "Wait a minute before sending more."
     elif isinstance(error, (AddressNotChosen, WrongAddress)):
@@ -165,6 +172,25 @@ def build_server(im: IMBridge) -> MCPServer:
     async def react(message_guid: str, reaction: str, remove: bool = False) -> dict[str, Any]:
         try:
             return {"guid": await im.react(message_guid, reaction, remove=remove)}
+        except Exception as error:
+            raise _refusal(error) from error
+
+    @server.tool(annotations=CHANGES)
+    async def edit_message(message_guid: str, text: str) -> dict[str, Any]:
+        """Change the text of a message you sent; readers see it marked Edited. iMessage allows 5 edits within
+        15 minutes of sending."""
+        try:
+            await im.edit(message_guid, text)
+            return {"edited": message_guid}
+        except Exception as error:
+            raise _refusal(error) from error
+
+    @server.tool(annotations=CHANGES)
+    async def unsend_message(message_guid: str) -> dict[str, Any]:
+        """Take back a message you sent, for everyone in the chat. iMessage allows it within 2 minutes of sending."""
+        try:
+            await im.unsend(message_guid)
+            return {"unsent": message_guid}
         except Exception as error:
             raise _refusal(error) from error
 

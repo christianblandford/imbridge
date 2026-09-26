@@ -185,9 +185,13 @@ async with IMBridge(allow=["+15551234567"]) as im:
     await chat.react(guid, "🔥")                          # ...or any emoji
     await chat.react(guid, "🔥", remove=True)
     await chat.typing()                                   # typing indicator on; chat.typing(False) turns it off
+    await chat.edit(guid, "fixed a typo")                 # your own messages: up to 5 edits, within 15 minutes
+    await chat.unsend(guid)                               # within 2 minutes
     await chat.mark_read()
     chat.history(50)                                      # latest messages, oldest first
     async for message in chat.messages(include_from_me=False):
+        ...
+    async for message in chat.changes():                  # messages as they're edited or unsent
         ...
 
     im.chats(20)                                          # recent chats, newest first; each has .can_send
@@ -199,8 +203,8 @@ async with IMBridge(allow=["+15551234567"]) as im:
 A group's name only works when no other chat shares it; otherwise imbridge refuses and lists the candidates' GUIDs
 (`imbridge chats` shows which is which).
 
-A chat has `guid`, `name`, `is_group`, `participants`, `last_message_at`, `address` (which of your addresses it's
-on) and `can_send`. `IMBridge` also has `send`,
+A chat has `guid`, `name`, `is_group`, `participants` (everyone but the address the program runs as),
+`last_message_at`, `address` (which of your addresses it's on) and `can_send`. `IMBridge` also has `send`,
 `reply`, `react`, `typing` and `mark_read` that take a chat or message GUID directly; the same allowlist and limits
 apply. iMessage keeps one tapback per person per message, so a new tapback replaces your previous one.
 
@@ -215,6 +219,8 @@ Every `Message` has these fields:
 | `reply_to` | the GUID of the message this is an inline reply to |
 | `reaction` | set when the row is a tapback: `kind` (`love`…`question`, `emoji`, `sticker`), `emoji`, `removed`, `target_guid`, `target_part` |
 | `attachments` | each with a `path` on disk, `mime_type` and `name` |
+| `edited_at`, `edit_count` | set once it's been edited; `text` is then the edited text |
+| `unsent_at` | set once its sender took it back; `text` is then `None` |
 | `address` | which of your addresses it was sent to (or, for your own messages, sent from) |
 
 **Options.** `IMBridge(allow=..., address=..., max_per_chat=10, max_total=30)` are covered above. `inject=True` loads the helper
@@ -222,12 +228,19 @@ into Messages whenever none answers; pass `inject=False` if something else manag
 0.5 seconds) sets how often streams check for new messages. Reading (streams, `history`, `chats`, `message`) only
 touches `chat.db`, so it works without the helper.
 
-**Errors.** `SendNotAllowed` means the chat isn't allowed. `RateLimited` means a limit was hit. `AddressNotChosen`
+**Errors.** `SendNotAllowed` means the chat isn't allowed. `RateLimited` means a limit was hit. `EditLimit` means
+iMessage's own limits on editing or unsending have passed (`kind` says which). `AddressNotChosen`
 means this Mac gets messages at several of your phone numbers and the program hasn't said which it is. `WrongAddress`
 means a chat or message is on another of your addresses. `WrongChat` means a
 chat was handed another chat's message. `ChatNotFound` means no existing conversation matches. `HelperError` means the
 helper refused or failed; its subclasses are `HelperNotConnected` and `HelperUnauthorized`. `FullDiskAccessError`
 means `chat.db` can't be read.
+
+**Edits and unsends.** When someone edits a message, its row in chat.db changes rather than a new one being added, so
+edits and unsends don't appear in the message streams. `chat.changes()` and `im.changes()` report them as they happen,
+each with `edited_at` or `unsent_at` set, and `im.message(guid)` always reads the current text. On macOS 26 and later,
+an unsend clears the text and marks the message only inside `message_summary_info`; imbridge reads both that and the
+older `date_retracted` column.
 
 **Effects:** `slam`, `loud`, `gentle`, `invisible_ink`, `echo`, `spotlight`, `balloons`, `confetti`, `love`, `lasers`,
 `fireworks`, `celebration`, `shooting_star`.
@@ -282,6 +295,7 @@ itself.
 | `send_message` | a new message, optionally with an effect |
 | `reply` | an inline reply to a message |
 | `react` | a tapback with any emoji or a classic |
+| `edit_message`, `unsend_message` | change or take back a message it sent, within iMessage's limits |
 | `show_typing` | the typing indicator |
 | `whoami` | the address it answers on and the chats it may send to |
 

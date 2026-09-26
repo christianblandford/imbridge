@@ -8,7 +8,8 @@ SCHEMA = """
 CREATE TABLE message (ROWID INTEGER PRIMARY KEY AUTOINCREMENT, guid TEXT UNIQUE, text TEXT, attributedBody BLOB,
     handle_id INTEGER DEFAULT 0, is_from_me INTEGER DEFAULT 0, date INTEGER, service TEXT, item_type INTEGER DEFAULT 0,
     cache_has_attachments INTEGER DEFAULT 0, associated_message_guid TEXT, associated_message_type INTEGER DEFAULT 0,
-    associated_message_emoji TEXT, thread_originator_guid TEXT);
+    associated_message_emoji TEXT, thread_originator_guid TEXT, date_edited INTEGER DEFAULT 0,
+    date_retracted INTEGER DEFAULT 0, message_summary_info BLOB);
 CREATE TABLE handle (ROWID INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT);
 CREATE TABLE chat (ROWID INTEGER PRIMARY KEY AUTOINCREMENT, guid TEXT, chat_identifier TEXT, display_name TEXT,
     service_name TEXT, style INTEGER);

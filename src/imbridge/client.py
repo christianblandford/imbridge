@@ -15,7 +15,7 @@ from typing import Any
 
 from . import config, messages_app
 from .addresses import ANY_ADDRESS, AddressNotChosen, AnyAddress, WrongAddress, address_key, is_phone
-from .chatdb import ChatDB, ChatInfo, Message
+from .chatdb import APPLE_EPOCH, ChatDB, ChatInfo, Message
 from .guard import AnyChat, SendGuard
 from .protocol import HelperNotConnected, HelperServer, HelperUnauthorized
 from .reactions import parse_target, reaction_label, reaction_type
@@ -26,6 +26,10 @@ log = logging.getLogger(__name__)
 CHAT_LINK_GRACE = 2.0
 # In a chat with yourself, what you send comes back as a received copy within seconds; copies are matched this long.
 ECHO_WINDOW = 60.0
+# iMessage's limits on changing what you sent: edits within 15 minutes (5 at most), unsends within 2.
+EDIT_WINDOW, MAX_EDITS, UNSEND_WINDOW = 15 * 60, 5, 2 * 60
+# So only recent messages can change; the changes stream watches this far back.
+CHANGE_WINDOW = EDIT_WINDOW + 5 * 60
 
 
 @dataclass
@@ -53,6 +57,18 @@ EFFECTS = {
 
 class ChatNotFound(LookupError):
     """No existing conversation matches the chat, phone number or email given."""
+
+
+class EditLimit(RuntimeError):
+    """One of iMessage's limits on changing a sent message.
+
+    kind is "edit_window" (edits only within 15 minutes of sending), "edit_count" (5 edits at most) or
+    "unsend_window" (unsends only within 2 minutes).
+    """
+
+    def __init__(self, message: str, kind: str) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 class WrongChat(ValueError):
@@ -99,7 +115,8 @@ class Chat:
 
     @property
     def participants(self) -> tuple[str, ...]:
-        return self.info.participants
+        """Everyone in the chat but the address this program is; your other addresses stay (there, you're a member)."""
+        return self._bridge._others(self.info.participants)
 
     @property
     def last_message_at(self) -> datetime | None:
@@ -119,7 +136,7 @@ class Chat:
         return f"Chat({self.name or ', '.join(self.participants) or self.guid!r})"
 
     def to_dict(self) -> dict[str, Any]:
-        return self.info.to_dict()
+        return {**self.info.to_dict(), "participants": list(self.participants)}
 
     async def messages(self, *, since: int | None = None, include_from_me: bool = False) -> AsyncIterator[Message]:
         """This chat's new messages, tapbacks and inline replies as they arrive (from now, or after a ROWID)."""
@@ -148,6 +165,21 @@ class Chat:
 
     async def mark_read(self) -> None:
         await self._bridge.mark_read(self.guid)
+
+    async def edit(self, message: Message | str, text: str) -> None:
+        """Edit one of your own messages in this chat (iMessage allows 5 edits within 15 minutes of sending)."""
+        guid, part = await self._own(message)
+        await self._bridge.edit(_target_ref(guid, part), text, chat=self.guid)
+
+    async def unsend(self, message: Message | str) -> None:
+        """Take back one of your own messages in this chat (iMessage allows it within 2 minutes of sending)."""
+        guid, part = await self._own(message)
+        await self._bridge.unsend(_target_ref(guid, part), chat=self.guid)
+
+    async def changes(self, *, include_from_me: bool = False) -> AsyncIterator[Message]:
+        """This chat's messages as they're edited or unsent, from now on (see IMBridge.changes)."""
+        async for message in self._bridge._changes(self.guid, include_from_me):
+            yield message
 
     async def _own(self, message: Message | str) -> tuple[str, int]:
         guid, chat_guid, part = await self._bridge._target(message, None)
@@ -325,6 +357,52 @@ class IMBridge:
         self._check_send(chat_guid)
         await self._request("mark-chat-read", {"chatGuid": chat_guid})
 
+    async def edit(self, message: Message | str, text: str, *, chat: str | None = None) -> None:
+        """Edit one of your own messages in an allowed chat. iMessage allows 5 edits within 15 minutes of sending;
+        past that this raises EditLimit. Readers see the new text, marked Edited.
+        """
+        target, chat_guid, part = await self._own_message(message, chat)
+        if target.unsent_at:
+            raise ValueError(f"message {target.guid} was unsent; there's nothing to edit")
+        self._check_send(chat_guid)
+        age = self._age(target)
+        if age > EDIT_WINDOW:
+            raise EditLimit(
+                f"iMessage only allows editing within 15 minutes of sending; this one is {age / 60:.0f} minutes old",
+                "edit_window",
+            )
+        if target.edit_count >= MAX_EDITS:
+            raise EditLimit(f"iMessage allows {MAX_EDITS} edits per message; this one has had them all", "edit_count")
+        self._guard.record_send(chat_guid)
+        await self._request(
+            "edit-message",
+            {
+                "chatGuid": chat_guid,
+                "messageGuid": target.guid,
+                "partIndex": part,
+                "editedMessage": text,
+                # what devices without edit support show instead
+                "backwardsCompatibilityMessage": f"Edited to \u201c{text}\u201d",
+            },
+        )
+
+    async def unsend(self, message: Message | str, *, chat: str | None = None) -> None:
+        """Take back one of your own messages in an allowed chat. iMessage allows it within 2 minutes of sending;
+        past that this raises EditLimit. Unsending a message that's already unsent does nothing.
+        """
+        target, chat_guid, part = await self._own_message(message, chat)
+        if target.unsent_at:
+            return
+        self._check_send(chat_guid)
+        age = self._age(target)
+        if age > UNSEND_WINDOW:
+            raise EditLimit(
+                f"iMessage only allows unsending within 2 minutes of sending; this message is {age:.0f} seconds old",
+                "unsend_window",
+            )
+        self._guard.record_send(chat_guid)
+        await self._request("unsend-message", {"chatGuid": chat_guid, "messageGuid": target.guid, "partIndex": part})
+
     async def account(self) -> dict[str, Any]:
         """The signed-in account (apple_id, login_status_message, aliases, ...); also proves the helper answers."""
         result = await self._request("get-account-info", {})
@@ -360,6 +438,16 @@ class IMBridge:
             if idle:
                 await asyncio.sleep(min(self.poll_interval, max(deadline - time.monotonic(), 0)))
 
+    async def changes(self, *, chat: str | None = None, include_from_me: bool = False) -> AsyncIterator[Message]:
+        """Messages as they're edited or unsent, from now on; each arrives with edited_at or unsent_at set.
+
+        Edits and unsends change existing messages rather than adding new ones, so they don't show up in the
+        message streams. iMessage only allows them on recent messages, so only those are watched. Your own messages
+        are skipped unless include_from_me.
+        """
+        async for message in self._changes(self.resolve_chat(chat) if chat else None, include_from_me):
+            yield message
+
     def history(self, chat: str, limit: int = 50) -> list[Message]:
         """A chat's latest messages to this program's address, oldest first."""
         self._check_address()
@@ -386,6 +474,11 @@ class IMBridge:
                 raise AddressNotChosen(_choose_address(phones, what))
             self._pinned_phone = address_key(phones[0]) if phones else None
         self._address_checked = True
+
+    def _others(self, participants: Iterable[str]) -> tuple[str, ...]:
+        if self._address_key is None:
+            return tuple(participants)
+        return tuple(handle for handle in participants if address_key(handle) != self._address_key)
 
     def _is_echo(self, message: Message) -> bool:
         """A received copy of something this program just sent: in a chat with yourself, everything comes back."""
@@ -443,6 +536,48 @@ class IMBridge:
                 raise AddressNotChosen(_choose_address([on], f"{chat_guid} is on a second phone number of yours"))
 
     # --- internals -----------------------------------------------------------------------------------------------
+
+    async def _changes(self, chat_guid: str | None, include_from_me: bool) -> AsyncIterator[Message]:
+        await asyncio.to_thread(self._check_address)
+        floor = await asyncio.to_thread(self.db.recent_floor, CHANGE_WINDOW)
+        started = (time.time() - APPLE_EPOCH) * 1e9  # changes stamped later than this are news
+        seen: dict[int, tuple[int, int, int]] = {}  # ROWID -> (date, date_edited, date_retracted) as last read
+        while True:
+            marks = await asyncio.to_thread(self.db.change_marks, floor)
+            changed = []
+            for rowid, date, edited, retracted in marks:
+                before = seen.get(rowid)
+                seen[rowid] = (date, edited, retracted)
+                if before is None:
+                    # First sight. A message can arrive and be edited or unsent between two reads (nothing reads
+                    # while the consumer is busy), so report it if the change happened after this stream began.
+                    if max(edited, retracted) > started:
+                        changed.append(rowid)
+                elif before[1:] != (edited, retracted):
+                    changed.append(rowid)
+            cutoff = (time.time() - APPLE_EPOCH - CHANGE_WINDOW) * 1e9
+            for rowid in [rowid for rowid, (date, _, _) in seen.items() if date and date < cutoff]:
+                del seen[rowid]  # too old to be edited or unsent any more
+            floor = min(seen) - 1 if seen else max((mark[0] for mark in marks), default=floor)
+            for rowid in changed:
+                message = await asyncio.to_thread(self.db.message_at, rowid)
+                if message is None or (chat_guid is not None and message.chat_guid != chat_guid):
+                    continue
+                if self._admits(message, strict=False) and (include_from_me or not message.is_from_me):
+                    yield message
+            await asyncio.sleep(self.poll_interval)
+
+    async def _own_message(self, message: Message | str, chat: str | None) -> tuple[Message, str, int]:
+        """The current row of one of your own messages, with its chat and part, for editing or unsending."""
+        guid, chat_guid, part = await self._target(message, chat)
+        target = await self._message_from_db(guid)  # fresh: its date, edit count, and whether it was unsent
+        if not target.is_from_me:
+            raise ValueError(f"message {guid} isn't yours; only your own messages can be edited or unsent")
+        return target, chat_guid, part
+
+    @staticmethod
+    def _age(message: Message) -> float:
+        return time.time() - message.date.timestamp() if message.date else 0.0
 
     async def _stream(self, since: int | None, include_from_me: bool, chat_guid: str | None) -> AsyncIterator[Message]:
         await asyncio.to_thread(self._check_address)

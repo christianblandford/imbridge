@@ -6,6 +6,7 @@ binary itself for a background service). The database is opened read-only.
 
 from __future__ import annotations
 
+import plistlib
 import re
 import sqlite3
 import time
@@ -58,10 +59,15 @@ class Message:
     reaction: Reaction | None = None  # set when this row is a tapback or sticker
     attachments: tuple[Attachment, ...] = ()
     address: str | None = None  # which of your addresses it was sent to (or, for your own messages, sent from)
+    edited_at: datetime | None = None  # when it was last edited; text is the edited text
+    edit_count: int = 0  # how many times it has been edited
+    unsent_at: datetime | None = None  # when its sender took it back (unsent); text is then None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["date"] = self.date.isoformat() if self.date else None
+        data["edited_at"] = self.edited_at.isoformat() if self.edited_at else None
+        data["unsent_at"] = self.unsent_at.isoformat() if self.unsent_at else None
         return data
 
 
@@ -89,6 +95,8 @@ class ChatDB:
         self._select = ""
         self._last_activity = ""
         self._chat_address = "NULL"  # chat.last_addressed_handle, where this macOS has it
+        self._edited = "0"  # message.date_edited, likewise
+        self._retracted = "0"  # message.date_retracted, likewise
         self._message_address = "NULL"  # message.destination_caller_id, likewise
 
     def close(self) -> None:
@@ -102,6 +110,23 @@ class ChatDB:
     def messages_after(self, rowid: int, limit: int = 500) -> list[Message]:
         """Messages newer than rowid, oldest first."""
         return self._messages("m.ROWID > ? AND m.item_type = 0 ORDER BY m.ROWID LIMIT ?", (rowid, limit))
+
+    def message_at(self, rowid: int) -> Message | None:
+        found = self._messages("m.ROWID = ?", (rowid,))
+        return found[0] if found else None
+
+    def recent_floor(self, seconds: float) -> int:
+        """The ROWID just before the first message dated in the last `seconds` (everything after it is recent)."""
+        since = int((time.time() - APPLE_EPOCH - seconds) * 1e9)
+        first = self._query("SELECT min(ROWID) FROM message WHERE date > ?", (since,))[0][0]
+        return first - 1 if first else self.max_rowid()
+
+    def change_marks(self, after_rowid: int) -> list[tuple[int, int, int, int]]:
+        """(ROWID, date, date_edited, date_retracted) of the messages after a ROWID: what edits and unsends touch."""
+        self._connect()
+        columns = f"ROWID, date, {self._edited}, {self._retracted}"
+        rows = self._query(f"SELECT {columns} FROM message WHERE ROWID > ?", (after_rowid,))
+        return [(row[0], row[1] or 0, row[2] or 0, row[3] or 0) for row in rows]
 
     def message(self, guid: str) -> Message | None:
         found = self._messages("m.guid = ?", (guid,))
@@ -211,6 +236,10 @@ class ChatDB:
                 self._chat_address = "c.last_addressed_handle"
             if "destination_caller_id" in message_columns:
                 self._message_address = "destination_caller_id"
+            if "date_edited" in message_columns:
+                self._edited = "date_edited"
+            if "date_retracted" in message_columns:
+                self._retracted = "date_retracted"
             self._last_activity = (
                 "(SELECT max(j.message_date) FROM chat_message_join j WHERE j.chat_id = c.ROWID)"
                 if "message_date" in join_columns
@@ -257,6 +286,7 @@ class ChatDB:
                         row["associated_message_type"], row["associated_message_guid"], row["associated_message_emoji"]
                     ),
                     address=display_address(row["destination_caller_id"]),
+                    **_changes(row),
                     attachments=attachments.get(row["rowid"], ()),
                 )
             )
@@ -289,9 +319,31 @@ def _message_select(columns: set[str]) -> str:
         "SELECT m.ROWID AS rowid, m.guid, m.text, m.attributedBody, m.is_from_me, m.date, m.service,"
         f" m.cache_has_attachments, {column('associated_message_guid')}, {column('associated_message_type')},"
         f" {column('associated_message_emoji')}, {column('thread_originator_guid')}, {column('destination_caller_id')},"
+        f" {column('date_edited')}, {column('date_retracted')}, {column('message_summary_info')},"
         " h.id AS sender, c.guid AS chat_guid, c.display_name AS chat_name, c.style AS chat_style"
         " FROM message m"
         " LEFT JOIN handle h ON h.ROWID = m.handle_id"
         " LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID"
         " LEFT JOIN chat c ON c.ROWID = cmj.chat_id"
     )
+
+
+def _changes(row: sqlite3.Row) -> dict[str, Any]:
+    """edited_at, edit_count and unsent_at for a message row.
+
+    On macOS 26+ an unsend leaves date_retracted at 0: it clears the text, sets date_edited, and lists the retracted
+    parts under "rp" in message_summary_info (a binary plist). Edits list their parts under "ep", with each part's
+    history under "ec" (the original text first, then one entry per edit).
+    """
+    edited, retracted = row["date_edited"] or 0, row["date_retracted"] or 0
+    if not (edited or retracted):
+        return {}
+    try:
+        info = plistlib.loads(row["message_summary_info"]) if row["message_summary_info"] else {}
+    except Exception:
+        info = {}
+    if retracted or info.get("rp"):
+        return {"unsent_at": apple_time(retracted or edited)}
+    history = info.get("ec") or {}
+    count = max((len(versions) - 1 for versions in history.values() if isinstance(versions, list)), default=0)
+    return {"edited_at": apple_time(edited), "edit_count": max(count, 1)}

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "imbridge"
-version = "0.2.0"
+version = "0.3.0"
 description = "iMessage for Python and AI agents on macOS: send, reply inline, tapback with any emoji, and receive. No server, no Electron."
 readme = "README.md"
 license = "Apache-2.0"

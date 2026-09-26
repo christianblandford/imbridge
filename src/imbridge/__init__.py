@@ -4,7 +4,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from .addresses import ANY_ADDRESS, AddressNotChosen, WrongAddress
 from .chatdb import Attachment, ChatDB, ChatInfo, FullDiskAccessError, Message
-from .client import EFFECTS, Chat, ChatNotFound, IMBridge, WrongChat
+from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, WrongChat
 from .guard import ANY_CHAT, RateLimited, SendNotAllowed
 from .protocol import HelperError, HelperNotConnected, HelperUnauthorized
 from .reactions import CLASSIC_TAPBACKS, Reaction
@@ -26,6 +26,7 @@ __all__ = [
     "ChatDB",
     "ChatInfo",
     "ChatNotFound",
+    "EditLimit",
     "FullDiskAccessError",
     "HelperError",
     "HelperNotConnected",

@@ -38,11 +38,13 @@ def add_message(path, guid, text, t):
 def test_tools_are_described_and_annotated(chat_db):
     tools = {tool.name: tool for tool in asyncio.run(server_for(chat_db).list_tools())}
     assert set(tools) == {
-        "list_chats", "read_messages", "check_messages", "send_message", "reply", "react", "show_typing", "whoami"
+        "list_chats", "read_messages", "check_messages", "send_message", "reply", "react", "edit_message",
+        "unsend_message", "show_typing", "whoami",
     }
     assert all(tool.description for tool in tools.values())
     assert tools["read_messages"].annotations.read_only_hint
     assert tools["send_message"].annotations.open_world_hint
+    assert tools["unsend_message"].annotations.destructive_hint
     assert "confetti" in tools["send_message"].description
     assert "love" in tools["react"].description
 

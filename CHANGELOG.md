@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 (unreleased)
+
+- Edits and unsends, read: `Message.edited_at`, `Message.edit_count` and `Message.unsent_at`, and `im.message(guid)`
+  returns the current text. On macOS 26+ an unsend leaves `date_retracted` at 0 and is marked only in
+  `message_summary_info`; both are read.
+- `im.changes()` and `chat.changes()`: messages as they're edited or unsent, including ones that arrive and change
+  between two reads.
+- Edits and unsends, sent: `chat.edit(message, text)` and `chat.unsend(message)` (and `im.edit`/`im.unsend`) for your
+  own messages, through the same allowlist, address and rate-limit checks as sends. Past iMessage's limits they raise
+  `EditLimit` with `kind` `edit_window` (15 minutes), `edit_count` (5 edits) or `unsend_window` (2 minutes). The MCP
+  server gains `edit_message` and `unsend_message`.
+- `Chat.participants` leaves out the address the program runs as, and keeps your other addresses.
+
 ## 0.2.0 (2026-09-26)
 
 - An MCP server: `imbridge mcp` (install `imbridge[mcp]`) gives Claude Code, Claude Desktop, Cursor and other MCP
