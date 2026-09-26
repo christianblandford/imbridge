@@ -4,11 +4,13 @@
 
 - Send Later: `chat.send_later(text, at)` schedules a message with Messages' own Send Later, to the minute and up to
   14 days ahead; it goes out even if nothing is running then. `chat.scheduled()` lists what's waiting (each with
-  `Message.scheduled_for`) and `chat.cancel_scheduled(message)` takes one back. IMCore quietly files a second message
-  scheduled in the same chat in your own conversation, so imbridge allows one waiting per chat, refuses chats with
-  yourself (where your own devices get it at once), and reads each message back to check Messages held it in the
-  right chat, raising `SendLaterFailed` otherwise. Also `imbridge send-later`/`scheduled`/`cancel` and the MCP tools
-  `send_later`, `list_scheduled` and `cancel_scheduled` (helper/patches/0007-send-later.patch).
+  `Message.scheduled_for`) and `chat.cancel_scheduled(message)` takes one back. Scheduled messages go out through
+  IMCore's chat registry, as Messages' own sends do: `-[IMChat sendMessage:]` relabels a chat as your own address
+  after a scheduled message, so the next message sent into it, scheduled or not, lands in your own conversation
+  (sometimes creating a broken "e:address" conversation). imbridge refuses chats with yourself (where your own devices
+  get a scheduled message at once) and reads each message back to check Messages held it in the right chat, raising
+  `SendLaterFailed` otherwise. Also `imbridge send-later`/`scheduled`/`cancel` and the MCP tools `send_later`,
+  `list_scheduled` and `cancel_scheduled` (helper/patches/0007-send-later.patch, 0008-registry-dispatch.patch).
 - Focus status: `im.focus_status(person)` (and `chat.focus_status()`, `imbridge focus`, the MCP tool `focus_status`)
   says whether someone has notifications silenced, or `None` when they don't share it. The helper's lookup had been
   failing on macOS 26.4 and later, where the method it called was renamed (helper/patches/0006-focus-status.patch).

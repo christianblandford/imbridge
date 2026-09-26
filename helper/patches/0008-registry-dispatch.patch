@@ -1,0 +1,39 @@
+imbridge registry dispatch: send scheduled messages through -[IMChatRegistry _chat:sendMessage:], the layer Messages
+itself ends up in, instead of -[IMChat sendMessage:]. The latter adjusts the sender, which can relabel the chat as the
+account's own address: the scheduled message still goes out right, but the next message sent into that chat (another
+scheduled one, or an ordinary one) lands in the account's own conversation, sometimes over SMS to an internal
+"e:address" handle that can't be delivered. openclaw/imsg and imcore-bridge dispatch the same way.
+
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+index fb7ae01..b093a2c 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
++++ b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+@@ -232,6 +232,19 @@ static void IMBSendPollVote(IMChat *chat, id pollGuid, id sessionIdentifier, id
+ }
+ 
+ 
++// imbridge: send the way Messages itself ends up sending, through the chat registry. -[IMChat sendMessage:] adjusts
++// the sender, which can relabel the chat as your own address: the message still arrives, but the next one sent into
++// that chat lands in your own conversation (seen after scheduling a message; imsg and imcore-bridge moved here too).
++static void IMBDispatch(IMChat *chat, IMMessage *message) {
++    SEL registrySend = NSSelectorFromString(@"_chat:sendMessage:");
++    id registry = [IMChatRegistry sharedInstance];
++    if ([registry respondsToSelector:registrySend]) {
++        ((void (*)(id, SEL, id, id))objc_msgSend)(registry, registrySend, chat, message);
++    } else {
++        [chat sendMessage:message];
++    }
++}
++
+ // imbridge: Send Later (macOS 15+). A scheduled message is built by the factory made for it, which takes the delivery
+ // date alone; building one by hand states the time twice, and IMCore has been seen honouring one and not the other
+ // (sending at once, or filing it in your own conversation). A chat that can't schedule sends at once, so ask first.
+@@ -265,7 +278,7 @@ static void IMBSendLater(IMChat *chat, id text, id deliverAt, NSString *transact
+             IMBReply(transaction, @{@"error": @"Couldn't build the scheduled message"});
+             return;
+         }
+-        [chat sendMessage:message];
++        IMBDispatch(chat, message);
+         IMBReply(transaction, @{@"identifier": [message guid] ?: @""});
+     } @catch (NSException *exception) {
+         IMBReply(transaction, @{@"error": [NSString stringWithFormat:@"Couldn't schedule: %@", exception.reason]});

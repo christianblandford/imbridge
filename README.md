@@ -239,9 +239,9 @@ macOS 15 or later show formatting; older devices get the plain text. A new conve
 **Send Later.** `send_later(text, at)` schedules a message with Messages' own Send Later: it goes out at the start of
 that minute (from a minute to 14 days ahead) even if your program, or Messages, isn't running then. The allowlist
 and rate limits apply when it's scheduled, so disallowing the chat afterwards doesn't stop it: cancel it with
-`cancel_scheduled()`. `scheduled()` lists what's waiting. IMCore quietly files a second message scheduled in the same
-chat in your own conversation instead, so imbridge allows one waiting per chat, refuses chats with yourself, and
-checks that Messages really held each message in the right chat (`SendLaterFailed` if not).
+`cancel_scheduled()`. `scheduled()` lists what's waiting. imbridge refuses chats with yourself, where your own devices
+get a scheduled message at once, and checks that Messages really held each message in the right chat
+(`SendLaterFailed` if not).
 
 **Starting conversations.** `im.send()` to a phone number or email you have no conversation with starts one, over
 iMessage if they have it and SMS otherwise. They have to be allowed: `IMBridge(allow=[NewContact("+15557654321")])`

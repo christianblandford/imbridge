@@ -553,8 +553,7 @@ class IMBridge:
 
         Messages sends it at the start of the minute `at` falls in (a minute to 14 days ahead; a naive datetime is
         local time), whether or not this program is still running. The allowlist and rate limits apply now, when
-        it's scheduled. One message per chat can wait at a time: IMCore files a second one in your own conversation
-        instead. imbridge checks Messages held it in the right chat, and raises SendLaterFailed if not.
+        it's scheduled. imbridge checks Messages held it in the right chat, and raises SendLaterFailed if not.
         """
         text = text.strip()
         if not text:
@@ -565,11 +564,6 @@ class IMBridge:
         now = datetime.now(timezone.utc)
         if when < now + timedelta(minutes=1) or when > now + timedelta(days=14):
             raise ValueError("Send Later takes a time from a minute to 14 days ahead")
-        if await asyncio.to_thread(self.db.scheduled, chat_guid):
-            raise ValueError(
-                f"{chat_guid} already has a message waiting to be sent later, and Messages holds one per chat (a "
-                "second ends up in your own conversation). Cancel it first, or wait until it has gone out."
-            )
         if await self._is_own_chat(chat_guid):  # asks Messages, so after every check that doesn't
             raise ValueError("imbridge doesn't schedule messages to yourself: your own devices get them right away")
         self._guard.record_send(chat_guid)

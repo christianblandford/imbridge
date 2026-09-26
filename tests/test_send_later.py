@@ -46,14 +46,16 @@ def messages_does(path, chat=1, **kwargs):
 
 def test_scheduling(chat_db):
     path = schedulable(chat_db)
+    store(path, "EARLIER", 1, TOMORROW.timestamp() - 3600)  # another already waiting in the chat is fine
     guid, requests = run(path, lambda im: im.chat(ALEX).send_later("see you tomorrow", TOMORROW), messages_does(path),
                          allow=[ALEX])
     assert guid == "LATER"
     (data,) = [request["data"] for request in requests if request["action"] == "send-later"]
     assert (data["chatGuid"], data["message"]) == (ALEX, "see you tomorrow")
     assert data["deliverAt"] % 60 == 0  # to the minute, as Messages schedules
-    (waiting,) = IMBridge(chat_db=path, token="t", inject=False).scheduled(ALEX)
-    assert waiting.guid == "LATER" and waiting.scheduled_for.timestamp() == data["deliverAt"]
+    waiting = IMBridge(chat_db=path, token="t", inject=False).scheduled(ALEX)
+    assert [message.guid for message in waiting] == ["EARLIER", "LATER"]  # soonest first
+    assert waiting[1].scheduled_for.timestamp() == data["deliverAt"]
 
 
 @pytest.mark.parametrize(("did", "problem"), [
@@ -76,11 +78,6 @@ def test_refused_before_anything_is_sent(chat_db):
         assert log == []
     with pytest.raises(SendNotAllowed):
         run(path, lambda im: im.send_later(ALEX, "hi", TOMORROW))
-    store(path, "WAITING", 1, TOMORROW.timestamp())  # one is already waiting in this chat
-    log = []
-    with pytest.raises(ValueError, match="already has a message waiting"):
-        run(path, lambda im: im.send_later(ALEX, "another", TOMORROW), None, log, allow=[ALEX])
-    assert log == []
 
 
 def test_not_to_yourself(chat_db):

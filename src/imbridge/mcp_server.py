@@ -37,8 +37,8 @@ These tools read and send iMessages on the user's Mac, through Messages.app.
 - Messages go to real people and can't be taken back, so be sure before you send.
 - A poll arrives as a message with `poll` (its options), and a vote as one with `vote`; read_poll shows the current
   tally and the question sent with the poll.
-- send_later schedules a message with Messages' Send Later (one waiting per chat); list_scheduled and
-  cancel_scheduled manage what's waiting.
+- send_later schedules a message with Messages' Send Later; list_scheduled and cancel_scheduled manage what's
+  waiting.
 """
 
 READS = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -240,7 +240,7 @@ def build_server(im: IMBridge) -> MCPServer:
     async def send_later(chat: str, text: str, at: str) -> dict[str, Any]:
         """Schedule a message with Messages' Send Later: it goes out at the start of that minute even if nothing is
         running then. `at` is an ISO 8601 date and time, like 2026-09-27T09:00 (local time) or with an offset;
-        a minute to 14 days ahead. One message per chat can wait at a time. Returns its guid."""
+        a minute to 14 days ahead. Returns its guid."""
         try:
             return {"guid": await im.send_later(chat, text, _when(at))}
         except Exception as error:
