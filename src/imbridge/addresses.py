@@ -45,6 +45,7 @@ def display_address(address: str | None) -> str | None:
 
 
 _PHONE = re.compile(r"\+?[\d\s().-]{7,}")  # digits and the usual punctuation, nothing else
+_EMAIL = re.compile(r"[^@\s:;/]+@[^@\s:;/]+\.[^@\s:;/.]+")
 
 
 def address_key(address: str | None) -> str | None:
@@ -89,8 +90,8 @@ def contact_address(value: str) -> str | None:
 
     Local numbers don't count, so a missing country code can never reach a stranger's number.
     """
-    value = value.strip()
-    if "@" in value and ";" not in value and " " not in value:
-        return value.lower()
+    value = display_address(value) or ""  # without mailto:, tel:, or IMCore's internal e: and p:
+    if "@" in value:
+        return value if _EMAIL.fullmatch(value) else None
     digits = re.sub(r"\D", "", value)
-    return f"+{digits}" if value.startswith("+") and 8 <= len(digits) <= 15 else None
+    return f"+{digits}" if value.startswith("+") and _PHONE.fullmatch(value) and 8 <= len(digits) <= 15 else None

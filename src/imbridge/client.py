@@ -27,6 +27,7 @@ from .addresses import (
     contact_address,
     display_address,
     is_phone,
+    same_address,
 )
 from .chatdb import APPLE_EPOCH, ChatDB, ChatInfo, Message
 from .guard import AnyChat, SendGuard, one_to_one_handle
@@ -534,9 +535,9 @@ class IMBridge:
         mentioned = [span.mention for span in formatted or () if span.mention]
         if mentioned:
             info = self.db.chat(chat_guid)
-            members = {address_key(handle) for handle in (info.participants if info else ())}
+            members = info.participants if info else ()
             for handle in mentioned:
-                if address_key(handle) not in members:
+                if not any(same_address(handle, member) for member in members):
                     raise ValueError(f"{handle} isn't in {chat_guid}, so they can't be mentioned there")
 
     def _my_handle(self, chat_guid: str) -> str:

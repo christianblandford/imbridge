@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 
 from imbridge import ANY_ADDRESS, AddressNotChosen, IMBridge, WrongAddress
-from imbridge.addresses import address_key, display_address, is_phone, same_address
+from imbridge.addresses import address_key, contact_address, display_address, is_phone, same_address
 from imbridge.chatdb import APPLE_EPOCH
 
 PERSONAL, BOT = "+15550001111", "+15550002222"  # two iPhones on one Apple ID
@@ -181,3 +181,17 @@ def test_same_address(a, b, same):
 def test_only_phone_numbers_have_phone_keys():
     assert address_key("urn:biz:4805550100") is None
     assert address_key("any;+;chat935842394823948234") is None
+
+
+@pytest.mark.parametrize(("given", "contact"), [
+    ("+1 (555) 123-4567", "+15551234567"),
+    ("New@Example.com", "new@example.com"),
+    ("mailto:new@example.com", "new@example.com"),
+    ("e:you@example.com", "you@example.com"),  # IMCore's internal form never becomes a handle of its own
+    ("555 123 4567", None),  # no country code
+    ("+1 555 CALL NOW", None),
+    ("bounces+1-5551234567=mms.att.net@sendgrid", None),  # not a whole email address
+    ("any;-;+15551234567", None),
+])
+def test_who_a_conversation_can_be_started_with(given, contact):
+    assert contact_address(given) == contact
