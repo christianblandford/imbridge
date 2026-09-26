@@ -113,6 +113,16 @@ def _poll_size(options: list[str], creator: str) -> int:
     return len(json.dumps({"version": 1, "item": item}, ensure_ascii=False, separators=(",", ":")).encode())
 
 
+def _chosen(guid: str | None) -> str | None:
+    """A caller's message GUID, as Messages writes GUIDs (an upper-case UUID); ValueError unless it's a UUID."""
+    if guid is None:
+        return None
+    try:
+        return str(uuid.UUID(guid)).upper()
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError(f"{guid!r} isn't a UUID; make one with str(uuid.uuid4())") from None
+
+
 def _sticker_file(path: str | Path) -> Path:
     source = Path(path).expanduser()
     if not source.is_file():
@@ -207,20 +217,25 @@ class Chat:
         """This chat's latest messages, oldest first."""
         return self._bridge.history(self.guid, limit, include_events=include_events)
 
-    async def send(self, text: Text, *, effect: str | None = None, subject: str | None = None) -> str:
-        """Send text to this chat: a string, or strings and Spans for formatting and mentions."""
-        return await self._bridge.send(self.guid, text, effect=effect, subject=subject)
+    async def send(
+        self, text: Text, *, effect: str | None = None, subject: str | None = None, guid: str | None = None
+    ) -> str:
+        """Send text to this chat: a string, or strings and Spans for formatting and mentions. guid: see
+        IMBridge.send."""
+        return await self._bridge.send(self.guid, text, effect=effect, subject=subject, guid=guid)
 
-    async def send_file(self, path: str | Path, *, reply_to: Message | str | None = None) -> str:
+    async def send_file(
+        self, path: str | Path, *, reply_to: Message | str | None = None, guid: str | None = None
+    ) -> str:
         """Send a file (a photo, GIF, video or document); reply_to makes it an inline reply to one of this chat's
-        messages. Returns the new message's GUID."""
+        messages. Returns the new message's GUID. guid: see IMBridge.send."""
         target = _target_ref(*await self._own(reply_to)) if reply_to is not None else None
-        return await self._bridge.send_file(self.guid, path, reply_to=target)
+        return await self._bridge.send_file(self.guid, path, reply_to=target, guid=guid)
 
-    async def reply(self, message: Message | str, text: Text) -> str:
-        """Reply inline to one of this chat's messages (a Message or its GUID)."""
-        guid, part = await self._own(message)
-        return await self._bridge.send(self.guid, text, reply_to=_target_ref(guid, part))
+    async def reply(self, message: Message | str, text: Text, *, guid: str | None = None) -> str:
+        """Reply inline to one of this chat's messages (a Message or its GUID). guid: see IMBridge.send."""
+        target, part = await self._own(message)
+        return await self._bridge.send(self.guid, text, reply_to=_target_ref(target, part), guid=guid)
 
     async def react(self, message: Message | str, reaction: str, *, remove: bool = False) -> str:
         """Tapback one of this chat's messages with a classic reaction or any emoji."""
@@ -424,6 +439,7 @@ class IMBridge:
         reply_to: str | None = None,
         effect: str | None = None,
         subject: str | None = None,
+        guid: str | None = None,
     ) -> str:
         """Send text to an allowed chat: a chat GUID, a group's name, or a phone number or email.
 
@@ -436,8 +452,11 @@ class IMBridge:
         WrongAddress unless it would be this program's.
 
         Returns the new message's GUID. reply_to makes it an inline reply to that message GUID; effect is a key of
-        EFFECTS (or a raw Messages effect identifier).
+        EFFECTS (or a raw Messages effect identifier). guid is one you choose (a UUID) and record before sending:
+        after a timeout or a crash, message(guid) says whether it went out, and sending again with the same guid
+        doesn't deliver it twice (Messages drops the duplicate).
         """
+        guid = _chosen(guid)
         try:
             chat_guid = self.resolve_chat(chat)
         except ChatNotFound:
@@ -451,11 +470,11 @@ class IMBridge:
                 raise
             if spans(text):
                 raise ValueError("start a conversation with plain text; formatting can follow") from None
-            return await self._start_chat(handle, plain(text), effect=effect, subject=subject)
+            return await self._start_chat(handle, plain(text), effect=effect, subject=subject, guid=guid)
         self._check_send(chat_guid)
         self._check_mentions(chat_guid, spans(text))
         self._guard.record_send(chat_guid)
-        return await self._send_text(chat_guid, text, reply_to=reply_to, effect=effect, subject=subject)
+        return await self._send_text(chat_guid, text, reply_to=reply_to, effect=effect, subject=subject, guid=guid)
 
     async def _send_text(
         self,
@@ -465,15 +484,17 @@ class IMBridge:
         reply_to: str | None = None,
         effect: str | None = None,
         subject: str | None = None,
+        guid: str | None = None,
     ) -> str:
         # Only once the chat has passed _check_send and the send is counted (record_send).
-        guid, part = parse_target(reply_to) if reply_to else (None, 0)
+        target, part = parse_target(reply_to) if reply_to else (None, 0)
         common = {
             "chatGuid": chat_guid,
             "subject": subject,
             "effectId": EFFECTS.get(effect, effect) if effect else None,
-            "selectedMessageGuid": guid,
+            "selectedMessageGuid": target,
             "partIndex": part,
+            "guid": guid,
         }
         if formatted := spans(text):
             result = await self._request("send-multipart", {**common, "parts": parts(formatted)})
@@ -731,33 +752,40 @@ class IMBridge:
             await asyncio.sleep(0.25)
         return None
 
-    async def send_file(self, chat: str, path: str | Path, *, reply_to: str | None = None) -> str:
+    async def send_file(
+        self, chat: str, path: str | Path, *, reply_to: str | None = None, guid: str | None = None
+    ) -> str:
         """Send a file (a photo, GIF, video or document) to an allowed chat; returns the new message's GUID.
 
-        reply_to makes it an inline reply. The file is first copied into ~/Library/Messages/Attachments/imbridge:
-        Messages is sandboxed and can't read it anywhere else, and that copy becomes the attachment Messages keeps.
+        reply_to makes it an inline reply, and guid is one you choose, as for send(). The file is first copied into
+        ~/Library/Messages/Attachments/imbridge: Messages is sandboxed and can't read it anywhere else, and that copy
+        becomes the attachment Messages keeps.
         """
+        guid = _chosen(guid)
         source = Path(path).expanduser()
         if not source.is_file():
             raise FileNotFoundError(f"no file at {source}")
         chat_guid = self.resolve_chat(chat)
         self._check_send(chat_guid)
         self._guard.record_send(chat_guid)
-        guid, part = parse_target(reply_to) if reply_to else (None, 0)
+        target, part = parse_target(reply_to) if reply_to else (None, 0)
         request = {
             "chatGuid": chat_guid,
             "isAudioMessage": 0,
             "attributedBody": None,
             "subject": None,
             "effectId": None,
-            "selectedMessageGuid": guid,
+            "selectedMessageGuid": target,
             "partIndex": part,
+            "guid": guid,
         }
         sent = await self._send_staged("send-attachment", source, request)
         self._remember(sent, chat_guid)
         return sent
 
-    async def _start_chat(self, handle: str, text: str, *, effect: str | None, subject: str | None) -> str:
+    async def _start_chat(
+        self, handle: str, text: str, *, effect: str | None, subject: str | None, guid: str | None = None
+    ) -> str:
         self._guard.check_allowed_handle(handle)
         self._check_address()
         chat_guid = f"any;-;{handle}"  # what the conversation will be called
@@ -773,6 +801,7 @@ class IMBridge:
                 "attributedBody": None,
                 "effectId": EFFECTS.get(effect, effect) if effect else None,
                 "subject": subject,
+                "guid": guid,
             },
         )
         self._recent.append((time.monotonic(), chat_guid, f"text:{text.strip()}"))
@@ -822,10 +851,13 @@ class IMBridge:
                 self._chat_of.clear()
             self._chat_of[sent] = chat_guid
 
-    async def reply(self, message: Message | str, text: Text, *, chat: str | None = None) -> str:
-        """Reply inline (threaded) to a message in an allowed chat: a Message, or a message GUID."""
-        guid, chat_guid, part = await self._target(message, chat)
-        return await self.send(chat_guid, text, reply_to=_target_ref(guid, part))
+    async def reply(
+        self, message: Message | str, text: Text, *, chat: str | None = None, guid: str | None = None
+    ) -> str:
+        """Reply inline (threaded) to a message in an allowed chat: a Message, or a message GUID. guid is one you
+        choose for the reply, as for send()."""
+        target, chat_guid, part = await self._target(message, chat)
+        return await self.send(chat_guid, text, reply_to=_target_ref(target, part), guid=guid)
 
     async def react(
         self, message: Message | str, reaction: str, *, remove: bool = False, chat: str | None = None

@@ -1,0 +1,35 @@
+imbridge caller-chosen GUIDs: send-message, send-multipart, send-attachment and classic tapbacks take an optional
+"guid" (a UUID) and create the message with it instead of letting IMCore pick one, so a caller that recorded the GUID
+before sending can find exactly that message in chat.db after a timeout or a crash. Anything that isn't a UUID is
+ignored. (Emoji tapbacks go through a factory with no GUID, and keep IMCore's.)
+
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+index a7ab088..e0e6c9f 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
++++ b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+@@ -1536,17 +1536,23 @@ + (void) sendMessage: (NSDictionary *) data transfers: (NSArray *) transfers att
+         ddScan = [data[@"ddScan"] integerValue] == 1;
+     }
+ 
++    // imbridge: a GUID the caller chose (a UUID), so it can find exactly this message in chat.db after a timeout
++    NSString *chosenGuid = nil;
++    if ([data[@"guid"] isKindOfClass:[NSString class]] && [[NSUUID alloc] initWithUUIDString:data[@"guid"]] != nil) {
++        chosenGuid = [data[@"guid"] uppercaseString];
++    }
++
+     void (^createMessage)(NSAttributedString*, NSAttributedString*, NSString*, NSString*, NSString*, long long*, NSRange, NSDictionary*, NSArray*, BOOL, BOOL) = ^(NSAttributedString *message, NSAttributedString *subject, NSString *effectId, NSString *threadIdentifier, NSString *associatedMessageGuid, long long *reaction, NSRange range, NSDictionary *summaryInfo, NSArray *transferGUIDs, BOOL isAudioMessage, BOOL ddScan) {
+         IMMessage *messageToSend = [[IMMessage alloc] init];
+         if (reaction == nil) {
+-            messageToSend = [messageToSend initWithSender:(nil) time:(nil) text:(message) messageSubject:(subject) fileTransferGUIDs:(transferGUIDs) flags:(isAudioMessage ? 0x300005 : (subject ? 0x10000d : 0x100005)) error:(nil) guid:(nil) subject:(nil) balloonBundleID:(nil) payloadData:(nil) expressiveSendStyleID:(effectId)];
++            messageToSend = [messageToSend initWithSender:(nil) time:(nil) text:(message) messageSubject:(subject) fileTransferGUIDs:(transferGUIDs) flags:(isAudioMessage ? 0x300005 : (subject ? 0x10000d : 0x100005)) error:(nil) guid:(chosenGuid) subject:(nil) balloonBundleID:(nil) payloadData:(nil) expressiveSendStyleID:(effectId)];
+             messageToSend.threadIdentifier = threadIdentifier;
+         } else if ((*reaction == 2006 || *reaction == 3006) && pendingEmoji != nil
+                    && [IMMessage respondsToSelector:@selector(instantMessageWithAssociatedMessageContent:associatedMessageGUID:associatedMessageType:associatedMessageRange:associatedMessageEmoji:messageSummaryInfo:threadIdentifier:)]) {
+             // custom emoji tapback (macOS 15+): a classic tapback plus the emoji itself
+             messageToSend = [IMMessage instantMessageWithAssociatedMessageContent:(message) associatedMessageGUID:(associatedMessageGuid) associatedMessageType:*(reaction) associatedMessageRange:(range) associatedMessageEmoji:(pendingEmoji) messageSummaryInfo:(summaryInfo) threadIdentifier:(nil)];
+         } else {
+-            messageToSend = [messageToSend initWithSender:(nil) time:(nil) text:(message) messageSubject:(subject) fileTransferGUIDs:(nil) flags:(0x5) error:(nil) guid:(nil) subject:(nil) associatedMessageGUID:(associatedMessageGuid) associatedMessageType:*(reaction) associatedMessageRange:(range) messageSummaryInfo:(summaryInfo)];
++            messageToSend = [messageToSend initWithSender:(nil) time:(nil) text:(message) messageSubject:(subject) fileTransferGUIDs:(nil) flags:(0x5) error:(nil) guid:(chosenGuid) subject:(nil) associatedMessageGUID:(associatedMessageGuid) associatedMessageType:*(reaction) associatedMessageRange:(range) messageSummaryInfo:(summaryInfo)];
+         }
+ 
+         if (ddScan && [[NSProcessInfo processInfo] operatingSystemVersion].majorVersion >= 13) {

@@ -240,3 +240,21 @@ def test_tapbacking_with_a_sticker(chat_db, tmp_path):
     with pytest.raises(SendNotAllowed):
         run(chat_db, lambda im: im.react_with_sticker("M1", image), None, log)
     assert log == []
+
+
+def test_choosing_the_guid(chat_db, tmp_path):
+    chosen = "df2325dc-cd0c-4618-b31d-43a4376e3624"
+    _, requests = run(chat_db, lambda im: im.chat(ALEX).send("hi", guid=chosen), allow=[ALEX])
+    assert requests[0]["data"]["guid"] == chosen.upper()  # as Messages writes GUIDs
+    _, requests = run(chat_db, lambda im: im.chat(ALEX).reply("M1", "threaded", guid=chosen), allow=[ALEX])
+    assert requests[0]["data"]["guid"] == chosen.upper()
+    photo = tmp_path / "cat.gif"
+    photo.write_bytes(b"GIF89a")
+    _, requests = run(chat_db, lambda im: im.chat(ALEX).send_file(photo, guid=chosen), allow=[ALEX])
+    assert requests[0]["data"]["guid"] == chosen.upper()
+    _, requests = run(chat_db, lambda im: im.send("+15550009999", "hello", guid=chosen), AVAILABLE, allow=[NEW])
+    assert requests[-1]["action"] == "create-chat" and requests[-1]["data"]["guid"] == chosen.upper()
+    log = []
+    with pytest.raises(ValueError, match="isn't a UUID"):
+        run(chat_db, lambda im: im.send(ALEX, "hi", guid="my-message-1"), None, log, allow=[ALEX])
+    assert log == []

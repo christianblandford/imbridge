@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Retrying safely: `send()`, `reply()` and `send_file()` (and a new conversation's first message) take a `guid` you
+  choose, a UUID, and the message is created with it (helper/patches/0011-chosen-guids.patch). Record it before
+  sending: after a timeout or crash, `im.message(guid)` says whether it went out, and a retry with the same `guid`
+  isn't delivered twice. Verified live: the chosen GUID lands in chat.db, and a retry reached the recipient once.
 - Location pins: a pin someone sends arrives with `Message.location` (a `Location`: latitude, longitude, name,
   address, Maps url), read from its vCard. `chat.send_location(latitude, longitude, name=None)`, `imbridge
   send-location` and the MCP tool `send_location` send a pin for the coordinates given, as Messages sends a place from

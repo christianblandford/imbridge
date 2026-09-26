@@ -257,6 +257,10 @@ and rate limits apply when it's scheduled, so disallowing the chat afterwards do
 get a scheduled message at once, and checks that Messages really held each message in the right chat
 (`SendLaterFailed` if not).
 
+**Retrying safely.** `send()`, `reply()` and `send_file()` take a `guid` you choose (a UUID, like
+`str(uuid.uuid4())`). Record it before sending; after a timeout or a crash, `im.message(guid)` tells you whether the
+message went out, and sending again with the same `guid` doesn't deliver it twice: Messages drops the duplicate.
+
 **Starting conversations.** `im.send()` to a phone number or email you have no conversation with starts one, over
 iMessage if they have it and SMS otherwise. They have to be allowed: `IMBridge(allow=[NewContact("+15557654321")])`
 in code, or `imbridge allow +15557654321`. The number needs its country code; a local number is refused, so a missing
