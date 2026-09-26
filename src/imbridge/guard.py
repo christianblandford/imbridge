@@ -72,13 +72,20 @@ class SendGuard:
         window: float = 60.0,
         clock: Callable[[], float] = time.time,
     ) -> None:
-        self._allow = allow
-        self._resolve = resolve  # turns a phone number or email from `allow` into its chat GUID
+        self._allow = [allow] if isinstance(allow, str) else allow  # one chat given on its own
+        self._resolve = resolve  # turns a phone number, email or group name from `allow` into its chat GUID
         self._resolved: set[str] | None = None
         self.max_per_chat = max_per_chat
         self.max_total = max_total
         self.window = window
         self.clock = clock
+
+    def resolve_allowed(self) -> set[str]:
+        """The chat GUIDs allowed in code; raises for an entry that matches no chat, so a typo fails at startup."""
+        if self._resolved is None:
+            chats = () if isinstance(self._allow, AnyChat) else self._allow
+            self._resolved = {self._resolve(chat) for chat in chats}
+        return self._resolved
 
     def allows(self, chat_guid: str) -> bool:
         if isinstance(self._allow, AnyChat):
@@ -86,15 +93,13 @@ class SendGuard:
         listed = read_allowed()  # read every time, so `imbridge disallow` takes effect in running programs
         if ANY_LINE in listed or chat_guid in listed:
             return True
-        if self._resolved is None:
-            self._resolved = {self._resolve(chat) for chat in self._allow}
-        return chat_guid in self._resolved
+        return chat_guid in self.resolve_allowed()
 
     def check_allowed(self, chat_guid: str) -> None:
         if not self.allows(chat_guid):
             raise SendNotAllowed(
-                f"imbridge isn't allowed to send to {chat_guid}. Allow it by running `imbridge allow {chat_guid}` "
-                "yourself (it asks you to confirm), or with IMBridge(allow=[...]) in your code."
+                f"imbridge isn't allowed to send to {chat_guid}. Allow it in your code with IMBridge(allow=[...]), "
+                f"or by running `imbridge allow {chat_guid}` yourself (it asks you to confirm)."
             )
 
     def record_send(self, chat_guid: str) -> None:

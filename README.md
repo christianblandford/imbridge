@@ -8,9 +8,11 @@ way for a bug to message your contacts.
 import asyncio
 from imbridge import IMBridge
 
+ALEX = "+15551234567"  # the one conversation this bot works in
+
 async def main():
-    async with IMBridge() as im:
-        chat = im.chat("+15551234567")  # the one conversation this bot works in
+    async with IMBridge(allow=[ALEX]) as im:  # imbridge sends nowhere else
+        chat = im.chat(ALEX)
         async for message in chat.messages():  # only this chat's new messages, tapbacks and replies
             if message.text and not message.reaction:
                 await chat.react(message, "👀")  # any emoji, not just the classic six
@@ -19,15 +21,13 @@ async def main():
 asyncio.run(main())
 ```
 
-This only sends once you've allowed the chat, by running `imbridge allow +15551234567` yourself.
-
 ## Why imbridge
 
 - **Nothing to host.** Your agent imports a library. There's no server process, Electron app or web UI. Besides your
   code, the only moving part is a small helper inside Messages, which talks to your process over a token-protected
   localhost socket.
-- **It can't spam your contacts.** imbridge is read-only until you allow a chat, and allowing one takes a person at
-  a terminal, so neither a script nor an AI agent can do it. A chat handle refuses messages from other chats, and
+- **It can't spam your contacts.** imbridge sends nowhere until you allow a chat, either in your code or with
+  `imbridge allow`, which only a person at a terminal can run. A chat handle refuses messages from other chats, and
   rate limits stop runaway loops.
 - **Any-emoji tapbacks.** The classic six plus any emoji, as iOS 18 and macOS 15 allow. BlueBubbles' released helper
   and imsg can only send the classic six.
@@ -109,10 +109,11 @@ load the helper. Allow it. To run the latest code instead of a release, use
 `pip install git+https://github.com/christianblandford/imbridge`. That builds the helper, so it needs the Xcode
 Command Line Tools (`xcode-select --install`).
 
-**4. Allow the chats imbridge may send to.** Until you do, imbridge only reads:
+**4. Decide where imbridge may send.** Until you do, it only reads. List the chats in your code with
+`IMBridge(allow=["+15551234567", "Family"])`, or allow them once for every program on this Mac, including the CLI:
 
 ```bash
-imbridge chats                   # find the chat: its GUID, a phone number or an email
+imbridge chats                   # find the chat: a phone number, an email, a group's name, or its GUID
 imbridge allow +15551234567      # asks you to confirm
 imbridge allowed                 # what's allowed; `imbridge disallow <chat>` takes one back
 ```
@@ -122,10 +123,15 @@ imbridge allowed                 # what's allowed; `imbridge disallow <chat>` ta
 imbridge is built so that a bug in your code, or an agent getting creative, can't message people you didn't choose:
 
 - **The allowlist.** Messages, replies, tapbacks, typing indicators and read receipts only go to allowed chats;
-  anything else raises `SendNotAllowed` before Messages is touched. `imbridge allow` asks for confirmation and
-  refuses to run without a terminal, so scripts and AI agents can't add chats themselves. Your code can allow chats
-  explicitly with `IMBridge(allow=["+15551234567"])`. Allowing every chat takes a deliberate `imbridge allow --any`,
-  or `allow=ANY_CHAT` in code.
+  anything else raises `SendNotAllowed` before Messages is touched. A chat can be allowed two ways, and both are
+  deliberate:
+  - **In your code:** `IMBridge(allow=["+15551234567", "Family"])` takes phone numbers, emails, group names and chat
+    GUIDs. `start()` checks that each one matches exactly one chat, so a typo fails immediately. A running program
+    can't add chats; there's no `allow()` to call from a loop.
+  - **For every program on the Mac:** `imbridge allow <chat>` asks for confirmation and refuses to run without a
+    terminal, so an agent driving the CLI can't add chats itself.
+
+  Allowing every chat takes a deliberate `allow=ANY_CHAT` in code, or `imbridge allow --any`.
 - **Chat handles.** `chat.messages()` yields only that chat's messages, and `chat.reply()` and `chat.react()` raise
   `WrongChat` for a message from any other chat.
 - **Rate limits.** At most 10 messages and tapbacks a minute to one chat and 30 in total, counted across every imbridge
@@ -136,8 +142,8 @@ imbridge is built so that a bug in your code, or an agent getting creative, can'
 ## Python API
 
 ```python
-async with IMBridge() as im:
-    chat = im.chat("+15551234567")                        # or an email, or a chat GUID (groups too)
+async with IMBridge(allow=["+15551234567"]) as im:
+    chat = im.chat("+15551234567")                        # or an email, a group's name, or a chat GUID
     guid = await chat.send("hello", effect="confetti")    # returns the new message's GUID
     await chat.reply(guid, "replying inline")             # a Message or a message GUID
     await chat.react(guid, "love")                        # love, like, dislike, laugh, emphasize, question
@@ -154,6 +160,9 @@ async with IMBridge() as im:
     async for message in im.all_messages():               # every chat: be deliberate about who you answer
         ...
 ```
+
+A group's name only works when no other chat shares it; otherwise imbridge refuses and lists the candidates' GUIDs
+(`imbridge chats` shows which is which).
 
 A chat has `guid`, `name`, `is_group`, `participants`, `last_message_at` and `can_send`. `IMBridge` also has `send`,
 `reply`, `react`, `typing` and `mark_read` that take a chat or message GUID directly; the same allowlist and limits
@@ -231,7 +240,8 @@ library.
 - Run **`imbridge doctor`** first. Before anything is loaded, it checks SIP, the boot-arg, library validation, Full
   Disk Access, and that every private API the helper calls still exists on your macOS. That last check matters after
   macOS updates: a helper that calls something Apple removed would crash Messages on launch.
-- **`SendNotAllowed`:** allow the chat with `imbridge allow`, in your own terminal.
+- **`SendNotAllowed`:** allow the chat in your code (`IMBridge(allow=[...])`), or with `imbridge allow` in your own
+  terminal.
 - **Helper logs:** `log stream --predicate 'subsystem == "imbridge"'`
 - **Messages disappears when the helper loads.** It restarts hidden; open it from the Dock as usual.
 - **The helper won't stay loaded.** Quit BlueBubbles Server if it's installed: it relaunches Messages with its own

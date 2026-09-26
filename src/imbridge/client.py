@@ -134,15 +134,16 @@ class Chat:
 class IMBridge:
     """iMessage through Messages.app itself: a helper inside Messages sends, chat.db says what arrived.
 
-    imbridge only sends to chats you've allowed (with `imbridge allow`, or allow=[...] here) and rate-limits what it
-    sends, so a bug can't message your contacts. Reading works for every chat.
+    imbridge only sends to chats you've allowed (in code with allow=[...], or with `imbridge allow`) and rate-limits
+    what it sends, so a bug can't message your contacts. Reading works for every chat.
 
-        async with IMBridge() as im:
+        async with IMBridge(allow=["+15551234567", "Family"]) as im:
             chat = im.chat("+15551234567")
             async for message in chat.messages():
                 await chat.reply(message, "got it")
 
-    allow: extra chats (GUIDs, phone numbers or emails) this program may send to, or ANY_CHAT for every chat.
+    allow: the chats this program may send to (phone numbers, emails, group names or chat GUIDs), on top of any
+        allowed with `imbridge allow`; ANY_CHAT allows every chat. start() checks that each one matches a chat.
     max_per_chat, max_total: messages and tapbacks per minute, per chat and in total, across all imbridge processes.
     inject: load the helper into Messages (restarting Messages) when none answers.
     """
@@ -177,7 +178,8 @@ class IMBridge:
         await self.close()
 
     async def start(self, timeout: float = 45.0) -> None:
-        """Listen for the helper and make sure one is connected, injecting it into Messages if needed."""
+        """Check the allowlist, then make sure a helper is connected, injecting it into Messages if needed."""
+        await asyncio.to_thread(self._guard.resolve_allowed)  # a typo in allow=[...] fails here, not at a send
         await self._ensure_helper(timeout)
 
     async def close(self) -> None:
@@ -191,7 +193,7 @@ class IMBridge:
     # --- chats ---------------------------------------------------------------------------------------------------
 
     def chat(self, chat: str) -> Chat:
-        """One conversation, by chat GUID or by the phone number / email of an existing one-to-one chat."""
+        """One conversation: a phone number or email (its one-to-one chat), a group's name, or a chat GUID."""
         guid = self.resolve_chat(chat)
         return Chat(self, self.db.chat(guid) or ChatInfo(guid, None, None, None, False, (), None))
 
@@ -200,12 +202,17 @@ class IMBridge:
         return [Chat(self, info) for info in self.db.chats(limit)]
 
     def resolve_chat(self, chat: str) -> str:
-        """A chat GUID as-is, or the chat GUID of the existing conversation with a phone number or email."""
+        """The chat GUID for a chat GUID, a phone number or email (its one-to-one chat), or a group's name."""
         if ";" in chat:
             return chat
         if guid := self.db.chat_for_handle(chat):
             return guid
-        raise ChatNotFound(f"no existing conversation with {chat}; start one in Messages first")
+        named = self.db.chats_named(chat)
+        if len(named) == 1:
+            return named[0]
+        if named:
+            raise ChatNotFound(f"{len(named)} chats are named {chat!r}; use one of their GUIDs: {', '.join(named)}")
+        raise ChatNotFound(f"no existing conversation with or named {chat!r}; start one in Messages first")
 
     # --- sending (allowed chats only) ----------------------------------------------------------------------------
 

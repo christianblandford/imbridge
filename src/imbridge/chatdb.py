@@ -160,6 +160,13 @@ class ChatDB:
             matches = [row for row in rows if re.sub(r"\D", "", row["chat_identifier"] or "").endswith(digits)]
         return matches[0]["guid"] if matches else None
 
+    def chats_named(self, name: str) -> list[str]:
+        """GUIDs of the chats with this name (a group's display name), ignoring case."""
+        rows = self._query(
+            "SELECT guid FROM chat WHERE display_name != '' AND lower(display_name) = lower(?)", (name.strip(),)
+        )
+        return list(dict.fromkeys(row["guid"] for row in rows))
+
     def _connect(self) -> sqlite3.Connection:
         if self._db is None:
             try:

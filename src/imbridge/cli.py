@@ -151,7 +151,7 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("start", help="load the helper into Messages (restarting it, hidden) and wait until it answers")
 
     allow = commands.add_parser("allow", help="let imbridge send to a chat (asks you to confirm)")
-    allow.add_argument("chat", nargs="?", help="chat GUID, or the phone number / email of an existing conversation")
+    allow.add_argument("chat", nargs="?", help="phone number, email, group name, or chat GUID")
     allow.add_argument("--any", action="store_true", help="every chat (asks you to type a confirmation)")
     disallow = commands.add_parser("disallow", help="stop imbridge sending to a chat")
     disallow.add_argument("chat", nargs="?")
@@ -159,7 +159,7 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("allowed", help="list the chats imbridge may send to")
 
     send = commands.add_parser("send", help="send a message to an allowed chat")
-    send.add_argument("chat", help="chat GUID, or the phone number / email of an existing conversation")
+    send.add_argument("chat", help="phone number, email, group name, or chat GUID")
     send.add_argument("text")
     send.add_argument("--reply-to", metavar="GUID", help="send it as an inline reply to this message")
     send.add_argument("--effect", choices=sorted(EFFECTS), help="bubble or screen effect")
@@ -178,7 +178,7 @@ def _parser() -> argparse.ArgumentParser:
     chats.add_argument("--json", action="store_true", help="one JSON object per line")
 
     history = commands.add_parser("history", help="show a chat's latest messages")
-    history.add_argument("chat", help="chat GUID, or the phone number / email of an existing conversation")
+    history.add_argument("chat", help="phone number, email, group name, or chat GUID")
     history.add_argument("-n", type=int, default=20, help="how many (default 20)")
     history.add_argument("--json", action="store_true", help="one JSON object per line")
 

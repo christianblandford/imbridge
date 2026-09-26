@@ -1,9 +1,8 @@
 """A tiny bot: in the one chat you name, answer "ping" with a 🏓 tapback and an inline "pong".
 
-    imbridge allow +15551234567            # once, in your own terminal
-    python examples/ping_bot.py +15551234567
+    python examples/ping_bot.py +15551234567      # or an email, a group's name, or a chat GUID
 
-It only ever reads and answers in that chat.
+The chat is allowed right here in the code, and the bot only ever reads and answers in it.
 """
 
 import asyncio
@@ -13,10 +12,8 @@ from imbridge import IMBridge
 
 
 async def main(target: str) -> None:
-    async with IMBridge() as im:
+    async with IMBridge(allow=[target]) as im:
         chat = im.chat(target)
-        if not chat.can_send:
-            sys.exit(f"imbridge may not send to {chat.guid} yet; run `imbridge allow {target}` first")
         print(f"listening in {chat!r}; send it 'ping'")
         async for message in chat.messages():
             if message.text and not message.reaction and message.text.strip().lower() == "ping":

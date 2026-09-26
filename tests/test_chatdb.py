@@ -161,6 +161,35 @@ def test_a_chat_refuses_messages_from_other_chats(chat_db):
         asyncio.run(crew.reply("M1", "hi"))
 
 
+def test_groups_by_name(chat_db):
+    im = bridge(chat_db)
+    assert im.chat("Crew").guid == CREW
+    assert im.chat("crew").guid == CREW
+
+
+def test_ambiguous_group_names_are_refused(chat_db):
+    db = sqlite3.connect(chat_db)
+    db.execute(
+        "INSERT INTO chat (guid, chat_identifier, display_name, style) VALUES ('any;+;chat999', 'chat999', 'Crew', 43)"
+    )
+    db.commit()
+    db.close()
+    with pytest.raises(ChatNotFound, match="2 chats are named"):
+        bridge(chat_db).chat("Crew")
+
+
+def test_inline_allowlist(chat_db):
+    im = bridge(chat_db, allow="Crew")  # a single chat can be given on its own
+    assert im.chat(CREW).can_send
+    assert not im.chat(ALEX).can_send
+
+
+def test_allowlist_typos_fail_at_start(chat_db):
+    im = bridge(chat_db, allow=["Crew", "+19998887777"])
+    with pytest.raises(ChatNotFound, match="19998887777"):
+        asyncio.run(im.start())  # before it ever waits for the helper
+
+
 def test_sending_needs_an_allowed_chat(chat_db):
     im = bridge(chat_db, allow=[CREW])
     with pytest.raises(SendNotAllowed):

@@ -10,9 +10,11 @@ First release.
   `attributedBody`.
 - Chat handles: `im.chat(...)` gives a conversation whose `messages()` only yields that chat, and whose `reply()` and
   `react()` refuse other chats' messages (`WrongChat`). The stream over every chat is `im.all_messages()`.
-- Sending is opt-in per chat: imbridge is read-only until a chat is allowed with `imbridge allow` (which needs a
-  person at a terminal) or `IMBridge(allow=[...])`. Sends are rate-limited to 10 a minute per chat and 30 in total,
-  across every imbridge process on the Mac.
+- Sending is opt-in per chat: imbridge is read-only until a chat is allowed, inline in code with
+  `IMBridge(allow=[...])` (phone numbers, emails, group names or GUIDs, checked at `start()`) or with `imbridge allow`
+  (which needs a person at a terminal). Sends are rate-limited to 10 a minute per chat and 30 in total, across every
+  imbridge process on the Mac.
+- Chats can be named by a group's display name wherever a chat is expected; a name several chats share is refused.
 - The `imbridge` command: `doctor`, `start`, `allow`, `disallow`, `allowed`, `send`, `reply`, `react`, `chats`,
   `history`, `watch`.
 - The helper is BlueBubbles' Private API helper (pinned commit) plus four patches: any-emoji tapbacks, a fix for the
