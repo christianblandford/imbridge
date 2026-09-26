@@ -1,0 +1,42 @@
+Four values were declared NSInteger* but hold (and are used as) plain integers; clang 16 makes that an error.
+
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+index 81f7330..fe2ba9f 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
++++ b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+@@ -604,7 +604,7 @@ -(void) handleServerEvent: (NSString*)event data: (NSDictionary*)data transactio
+                     NSTimeInterval delayInSeconds = 1.0;
+                     dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayInSeconds * NSEC_PER_SEC));
+                     dispatch_after(popTime, dispatch_get_main_queue(), ^(void){
+-                        NSInteger *status = [[cls sharedInstance] availabilityForHandle:(handle)];
++                        NSInteger status = [[cls sharedInstance] availabilityForHandle:(handle)];
+                         DLog("BLUEBUBBLESHELPER: Found status %{public}ld for %{public}@", (long)status, data[@"address"]);
+                         if (transaction != nil) {
+                             BOOL silenced = status == 2;
+@@ -658,7 +658,7 @@ -(void) handleServerEvent: (NSString*)event data: (NSDictionary*)data transactio
+         }
+ 
+         [[IDSIDQueryController sharedInstance] forceRefreshIDStatusForDestinations:(@[dest]) service:(serviceName) listenerID:(@"SOIDSListener-com.apple.imessage-rest") queue:(dispatch_queue_create("HandleIDS", NULL)) completionBlock:^(NSDictionary *response) {
+-            NSInteger *status = [response.allValues.firstObject integerValue];
++            NSInteger status = [response.allValues.firstObject integerValue];
+             BOOL available = status == 1;
+             DLog("BLUEBUBBLESHELPER: Status for %{public}@ is %{public}ld", data[@"address"], (long)available);
+             if (transaction != nil) {
+@@ -804,7 +804,7 @@ -(void) handleServerEvent: (NSString*)event data: (NSDictionary*)data transactio
+             NSMutableArray* locations = [[NSMutableArray alloc] initWithArray:@[]];
+             for (NSObject* handle in handles) {
+                 FMFLocation* location = [[IMFMFSession sharedInstance] locationForFMFHandle:handle];
+-                NSInteger* type = ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion < 13) ? 0 : [location locationType];
++                NSInteger type = ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion < 13) ? 0 : [location locationType];
+                 NSDictionary* locDetails = @{
+                     @"handle": [[location handle] identifier] ?: [NSNull null],
+                     @"coordinates": @[@([location coordinate].latitude), @([location coordinate].longitude)],
+@@ -1362,7 +1362,7 @@ - (void)setLocations:(id)arg1 {
+     DLog("BLUEBUBBLESHELPER: Got new locations: %{public}@", locations);
+     
+     for (FMFLocation* location in locations) {
+-        NSInteger* type = ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion < 13) ? 0 : [location locationType];
++        NSInteger type = ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion < 13) ? 0 : [location locationType];
+         NSMutableDictionary* locDetails = [[NSMutableDictionary alloc] initWithDictionary: @{
+             @"handle": [[location handle] identifier] ?: [NSNull null],
+             @"coordinates": @[@([location coordinate].latitude), @([location coordinate].longitude)],

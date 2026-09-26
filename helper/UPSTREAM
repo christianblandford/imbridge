@@ -1,0 +1,3 @@
+# The BlueBubbles Private API helper that imbridge builds, and the exact commit the patches in ./patches apply to.
+HELPER_REPO=https://github.com/BlueBubblesApp/bluebubbles-helper
+HELPER_COMMIT=1ee57f3fde63f8cc5769d60cfabfe9a06fcc1069

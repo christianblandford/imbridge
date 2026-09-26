@@ -1,0 +1,18 @@
+imbridge
+Copyright 2026 Christian Blandford
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The helper that imbridge injects into Messages.app is built from the BlueBubbles Private API helper
+(https://github.com/BlueBubblesApp/bluebubbles-helper), Copyright the BlueBubbles contributors, licensed under the
+Apache License, Version 2.0. imbridge builds it at the commit pinned in helper/UPSTREAM and modifies it with the
+patches in helper/patches.
+
+The helper also contains:
+- CocoaAsyncSocket (https://github.com/robbiehanson/CocoaAsyncSocket), public domain (BSD license where public
+  domain is not recognized)
+- ZKSwizzle (https://github.com/alexzielenski/ZKSwizzle), Copyright (c) 2014 Alexander S Zielenski, MIT License
+- CTBlockDescription from CTObjectiveCRuntimeAdditions (https://github.com/ebf/CTObjectiveCRuntimeAdditions),
+  Copyright (c) 2012 Oliver Letterer, MIT License
+
+imbridge is not affiliated with or endorsed by Apple Inc. iMessage and Messages are trademarks of Apple Inc.

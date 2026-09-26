@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: pytest -q
+
+  helper:
+    # macOS 15's SDK ships the IMCore/IDS link stubs the helper needs.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the helper (pinned upstream + patches)
+        run: helper/build.sh
+      - name: Check the helper
+        run: |
+          file src/imbridge/helper/imbridge-helper.dylib | grep -q arm64e
+          if otool -L src/imbridge/helper/imbridge-helper.dylib | grep -qi chatkit; then
+            echo "the helper must not link ChatKit (it moved to /System/iOSSupport on macOS 26+)"; exit 1
+          fi
+      - name: Build the wheel
+        run: pipx run build --wheel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/*.whl

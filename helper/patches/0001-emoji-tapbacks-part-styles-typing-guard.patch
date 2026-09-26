@@ -1,0 +1,126 @@
+Custom emoji tapbacks (reactionType "emoji:👀" / "-emoji:👀" -> associatedMessageType 2006/3006),
+per-part text styles and effects on send-multipart, and a guard for the typing handler, which crashed Messages
+when a request arrived without a transactionId. Written for a patched BlueBubbles setup on macOS 15 (2026-09-21).
+
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+index abe6bc3..d346ebe 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
++++ b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+@@ -193,8 +193,11 @@ - (void)handleTypingIndicatorForChat:(NSString *)chatGuid isTyping:(BOOL)isTypin
+         // If the IMChat instance is not null, start typing
+         [chat setLocalUserIsTyping:isTyping];
+         os_log(logger, "Set local user is typing %d on chat %@", isTyping, chatGuid);
+-        
+-        [networkController sendMessage: @{@"transactionId": transaction}];
++
++        // the server sends typing events with no transaction for group chats; a nil value here crashed Messages
++        if (transaction != nil) {
++            [networkController sendMessage: @{@"transactionId": transaction}];
++        }
+     }
+ }
+ 
+@@ -507,6 +510,7 @@ -(void) handleServerEvent: (NSString*)event data: (NSDictionary*)data transactio
+                         @"__kIMMentionConfirmedMention": dict[@"mention"],
+                         @"__kIMMessagePartAttributeName": [NSNumber numberWithInt:index],
+                     } range:NSMakeRange(0, [[mentionStr string] length])];
++                    [BlueBubblesHelper applyPartStyles:dict toString:mentionStr];
+                     [attributedString appendAttributedString:mentionStr];
+                 } else {
+                     NSMutableAttributedString *messageStr = [[NSMutableAttributedString alloc] initWithString: dict[@"text"]];
+@@ -514,6 +518,7 @@ -(void) handleServerEvent: (NSString*)event data: (NSDictionary*)data transactio
+                         @"__kIMBaseWritingDirectionAttributeName": @"-1",
+                         @"__kIMMessagePartAttributeName": [NSNumber numberWithInt:index],
+                     } range:NSMakeRange(0, [[messageStr string] length])];
++                    [BlueBubblesHelper applyPartStyles:dict toString:messageStr];
+                     [attributedString appendAttributedString:messageStr];
+                 }
+             }
+@@ -862,7 +867,18 @@ -(void) handleServerEvent: (NSString*)event data: (NSDictionary*)data transactio
+ 
+ }
+ 
++// Custom emoji tapbacks (macOS 15+): reactionType "emoji:👀" adds, "-emoji:👀" removes.
++static NSString *pendingEmoji = nil;
++
+++(NSString *) emojiFromReactionType:(NSString *)reactionType {
++    if ([reactionType hasPrefix:@"emoji:"]) return [reactionType substringFromIndex:6];
++    if ([reactionType hasPrefix:@"-emoji:"]) return [reactionType substringFromIndex:7];
++    return nil;
++}
++
+ +(long long) parseReactionType:(NSString *)reactionType {
++    if ([reactionType hasPrefix:@"emoji:"]) return 2006;
++    if ([reactionType hasPrefix:@"-emoji:"]) return 3006;
+     NSString *lowerCaseType = [reactionType lowercaseString];
+ 
+     DLog("BLUEBUBBLESHELPER: %{public}@", lowerCaseType);
+@@ -883,6 +899,8 @@ +(long long) parseReactionType:(NSString *)reactionType {
+ }
+ 
+ +(NSString *) reactionToVerb:(NSString *)reactionType {
++    if ([reactionType hasPrefix:@"emoji:"]) return [NSString stringWithFormat:@"Reacted %@ to ", [reactionType substringFromIndex:6]];
++    if ([reactionType hasPrefix:@"-emoji:"]) return [NSString stringWithFormat:@"Removed a %@ reaction from ", [reactionType substringFromIndex:7]];
+     NSString *lowerCaseType = [reactionType lowercaseString];
+ 
+     if([@"love" isEqualToString:(lowerCaseType)]) return @"Loved ";
+@@ -907,6 +925,27 @@ +(void) getMessageItem:(IMChat *)chat :(NSString *)actionMessageGuid completionB
+     }];
+ }
+ 
++// Per-part styles and text effects for send-multipart (macOS 15+): part keys "styles": ["bold","italic","underline","strikethrough"]
++// and "effect": one of scaleRipple, stretch, squish, bounce, big, bloom, somersault, shakeVertical, shakeHorizontal, jitter, small, explode.
++extern long IMTextEffectTypeFromName(NSString *name);
++
+++(void) applyPartStyles:(NSDictionary *)dict toString:(NSMutableAttributedString *)str {
++    if ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion < 15 || [str length] == 0) return;
++    NSRange range = NSMakeRange(0, [str length]);
++    id styles = dict[@"styles"];
++    if ([styles isKindOfClass:[NSArray class]]) {
++        if ([styles containsObject:@"bold"]) [str addAttribute:@"__kIMTextBoldAttributeName" value:@1 range:range];
++        if ([styles containsObject:@"italic"]) [str addAttribute:@"__kIMTextItalicAttributeName" value:@1 range:range];
++        if ([styles containsObject:@"underline"]) [str addAttribute:@"__kIMTextUnderlineAttributeName" value:@1 range:range];
++        if ([styles containsObject:@"strikethrough"]) [str addAttribute:@"__kIMTextStrikethroughAttributeName" value:@1 range:range];
++    }
++    id effect = dict[@"effect"];
++    if ([effect isKindOfClass:[NSString class]] && [effect length] > 0) {
++        long type = IMTextEffectTypeFromName(effect);
++        if (type > 0) [str addAttribute:@"__kIMTextEffectAttributeName" value:@(type) range:range];
++    }
++}
++
+ // Apply text formatting ranges to an attributed string created from the message body.
+ +(NSMutableAttributedString *) applyTextFormatting:(NSArray *)formatting toMessage:(NSString *)message {
+     if (message == nil || message == (id)[NSNull null]) return nil;
+@@ -1052,6 +1091,10 @@ + (void) sendMessage: (NSDictionary *) data transfers: (NSArray *) transfers att
+         if (reaction == nil) {
+             messageToSend = [messageToSend initWithSender:(nil) time:(nil) text:(message) messageSubject:(subject) fileTransferGUIDs:(transferGUIDs) flags:(isAudioMessage ? 0x300005 : (subject ? 0x10000d : 0x100005)) error:(nil) guid:(nil) subject:(nil) balloonBundleID:(nil) payloadData:(nil) expressiveSendStyleID:(effectId)];
+             messageToSend.threadIdentifier = threadIdentifier;
++        } else if ((*reaction == 2006 || *reaction == 3006) && pendingEmoji != nil
++                   && [IMMessage respondsToSelector:@selector(instantMessageWithAssociatedMessageContent:associatedMessageGUID:associatedMessageType:associatedMessageRange:associatedMessageEmoji:messageSummaryInfo:threadIdentifier:)]) {
++            // custom emoji tapback (macOS 15+): a classic tapback plus the emoji itself
++            messageToSend = [IMMessage instantMessageWithAssociatedMessageContent:(message) associatedMessageGUID:(associatedMessageGuid) associatedMessageType:*(reaction) associatedMessageRange:(range) associatedMessageEmoji:(pendingEmoji) messageSummaryInfo:(summaryInfo) threadIdentifier:(nil)];
+         } else {
+             messageToSend = [messageToSend initWithSender:(nil) time:(nil) text:(message) messageSubject:(subject) fileTransferGUIDs:(nil) flags:(0x5) error:(nil) guid:(nil) subject:(nil) associatedMessageGUID:(associatedMessageGuid) associatedMessageType:*(reaction) associatedMessageRange:(range) messageSummaryInfo:(summaryInfo)];
+         }
+@@ -1115,6 +1158,7 @@ + (void) sendMessage: (NSDictionary *) data transfers: (NSArray *) transfers att
+             if (data[@"reactionType"] != [NSNull null] && [data[@"reactionType"] length] != 0) {
+                 NSString *reaction = data[@"reactionType"];
+                 long long reactionLong = [BlueBubblesHelper parseReactionType:(reaction)];
++                pendingEmoji = [BlueBubblesHelper emojiFromReactionType:(reaction)];
+                 NSDictionary *messageSummary;
+                 if (item != nil) {
+                     NSAttributedString *text = [item text];
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/IMMessage.h b/Messages/MacOS-11+/BlueBubblesHelper/IMMessage.h
+index bab3ccc..83a255e 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/IMMessage.h
++++ b/Messages/MacOS-11+/BlueBubblesHelper/IMMessage.h
+@@ -73,6 +73,8 @@ typedef NS_ENUM(NSInteger, IMMessageDescriptionType) {
+ + (id)breadcrumbMessageWithText:(id)arg1 associatedMessageGUID:(id)arg2 balloonBundleID:(id)arg3 fileTransferGUIDs:(id)arg4 payloadData:(id)arg5 threadIdentifier:(id)arg6 API_AVAILABLE(macos(10.16), ios(14.0), watchos(7.0));
+ + (id)editedMessageWithOriginalMessage:(id)arg1 originalPrefixedGUID:(id)arg2 newBody:(id)arg3;
+ + (IMMessage*)instantMessageWithAssociatedMessageContent:(id)arg1 flags:(unsigned long long)arg2 associatedMessageGUID:(id)arg3 associatedMessageType:(long long)arg4 associatedMessageRange:(struct _NSRange)arg5 messageSummaryInfo:(id)arg6 ;
++// macOS 15+: custom emoji tapbacks (associatedMessageType 2006 add / 3006 remove, with the emoji itself)
+++ (IMMessage*)instantMessageWithAssociatedMessageContent:(id)arg1 associatedMessageGUID:(id)arg2 associatedMessageType:(long long)arg3 associatedMessageRange:(struct _NSRange)arg4 associatedMessageEmoji:(id)arg5 messageSummaryInfo:(id)arg6 threadIdentifier:(id)arg7;
+ + (IMMessage*)instantMessageWithAssociatedMessageContent:(id)arg1 flags:(unsigned long long)arg2 associatedMessageGUID:(id)arg3 associatedMessageType:(long long)arg4 associatedMessageRange:(struct _NSRange)arg5 messageSummaryInfo:(id)arg6 threadIdentifier:(id)arg7 API_AVAILABLE(macos(10.16), ios(14.0), watchos(7.0));
+ @property(nonatomic) unsigned long long sortID; // @synthesize sortID=_sortID;
+ @property(nonatomic) BOOL isSOS; // @synthesize isSOS=_isSOS;

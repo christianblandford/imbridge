@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "imbridge"
+version = "0.1.0"
+description = "iMessage for Python and AI agents on macOS: send, reply inline, tapback with any emoji, and receive. No server, no Electron."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.10"
+authors = [{ name = "Christian Blandford" }]
+keywords = ["imessage", "messages", "macos", "ai-agents", "tapback", "chatbot", "bluebubbles"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: MacOS X",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Communications :: Chat",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+imbridge = "imbridge.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/christianblandford/imbridge"
+Issues = "https://github.com/christianblandford/imbridge/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/imbridge"]
+artifacts = ["src/imbridge/helper/*.dylib"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "helper", "tests", "examples", "hatch_build.py", "README.md", "LICENSE", "NOTICE", "CHANGELOG.md"]
+exclude = ["*.dylib"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

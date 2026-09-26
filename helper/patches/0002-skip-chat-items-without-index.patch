@@ -1,0 +1,42 @@
+On macOS 26+ a message item's _newChatItems can include tapback (IMMessageAcknowledgmentChatItem) and typing
+(IMTypingChatItem) items that do not implement -index. Finding the targeted part for a reply, tapback or unsend
+called -index on every item and crashed Messages. Skip items that don't respond to it.
+
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+index d346ebe..81f7330 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
++++ b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+@@ -365,13 +365,14 @@ -(void) handleServerEvent: (NSString*)event data: (NSDictionary*)data transactio
+                     if ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion > 11 && [i isKindOfClass:cls]) {
+                         IMAggregateAttachmentMessagePartChatItem *aggregate = i;
+                         for (IMMessagePartChatItem *i2 in [aggregate aggregateAttachmentParts]) {
+-                            if ([i2 index] == [data[@"partIndex"] integerValue]) {
++                            if ([i2 respondsToSelector:@selector(index)] && [i2 index] == [data[@"partIndex"] integerValue]) {
+                                 item = i2;
+                                 break;
+                             }
+                         }
+                     } else {
+-                        if ([i index] == [data[@"partIndex"] integerValue]) {
++                        // macOS 26+: _newChatItems also holds tapback and typing items, which have no -index (crashed Messages)
++                        if ([i respondsToSelector:@selector(index)] && [i index] == [data[@"partIndex"] integerValue]) {
+                             item = i;
+                             break;
+                         }
+@@ -1140,13 +1141,14 @@ + (void) sendMessage: (NSDictionary *) data transfers: (NSArray *) transfers att
+                     if ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion > 11 && [i isKindOfClass:cls]) {
+                         IMAggregateAttachmentMessagePartChatItem *aggregate = i;
+                         for (IMMessagePartChatItem *i2 in [aggregate aggregateAttachmentParts]) {
+-                            if ([i2 index] == [data[@"partIndex"] integerValue]) {
++                            if ([i2 respondsToSelector:@selector(index)] && [i2 index] == [data[@"partIndex"] integerValue]) {
+                                 item = i2;
+                                 break;
+                             }
+                         }
+                     } else {
+-                        if ([i index] == [data[@"partIndex"] integerValue]) {
++                        // macOS 26+: _newChatItems also holds tapback and typing items, which have no -index (crashed Messages)
++                        if ([i respondsToSelector:@selector(index)] && [i index] == [data[@"partIndex"] integerValue]) {
+                             item = i;
+                             break;
+                         }

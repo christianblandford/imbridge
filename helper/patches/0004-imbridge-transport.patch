@@ -1,0 +1,139 @@
+imbridge transport: the port comes from IMBRIDGE_PORT (default 45700 + uid - 501, so it never collides with
+BlueBubbles Server); with IMBRIDGE_TOKEN set, requests must carry that token or get {"error": "unauthorized"};
+requests are read one newline-terminated line at a time instead of one socket read each (which dropped or split
+requests); the helper redials every second instead of every 5; logs go to the "imbridge" subsystem.
+
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+index fe2ba9f..a77c615 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
++++ b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+@@ -103,7 +103,7 @@ + (instancetype)sharedInstance {
+     @synchronized(self) {
+         if (!plugin) {
+             plugin = [[self alloc] init];
+-            logger = os_log_create("BlueBubblesHelper", "helper");
++            logger = os_log_create("imbridge", "helper");
+         }
+     }
+     return plugin;
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/Logging.h b/Messages/MacOS-11+/BlueBubblesHelper/Logging.h
+index 7136000..0982a24 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/Logging.h
++++ b/Messages/MacOS-11+/BlueBubblesHelper/Logging.h
+@@ -11,12 +11,12 @@
+ 
+ 
+ #ifdef DEBUG
+-#    define ELog(N, ...) os_log_with_type(os_log_create("com.bluebubbles.messaging", "DEBUG"),OS_LOG_TYPE_ERROR,N,##__VA_ARGS__)
++#    define ELog(N, ...) os_log_with_type(os_log_create("imbridge", "DEBUG"),OS_LOG_TYPE_ERROR,N,##__VA_ARGS__)
+ #else
+ #    define ELog(...) /* */
+ #endif
+ #ifdef DEBUG
+-#    define DLog(N, ...) os_log_with_type(os_log_create("com.bluebubbles.messaging", "DEBUG"),OS_LOG_TYPE_DEFAULT,N ,##__VA_ARGS__)
++#    define DLog(N, ...) os_log_with_type(os_log_create("imbridge", "DEBUG"),OS_LOG_TYPE_DEFAULT,N ,##__VA_ARGS__)
+ #else
+ #    define DLog(...) /* */
+ #endif
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/NetworkController.m b/Messages/MacOS-11+/BlueBubblesHelper/NetworkController.m
+index e9152bd..4370dc8 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/NetworkController.m
++++ b/Messages/MacOS-11+/BlueBubblesHelper/NetworkController.m
+@@ -24,7 +24,7 @@ @implementation NetworkController
+ + (void)initialize {
+   if (self == [NetworkController class]) {
+       sharedInstance = [[self alloc] init];
+-      logger = os_log_create("BlueBubblesHelper", "network-socket");
++      logger = os_log_create("imbridge", "network-socket");
+   }
+ }
+ 
+@@ -37,25 +37,34 @@ + (NetworkController*)sharedInstance {
+ 
+ #define CLAMP(x, low, high) (MAX(low, MIN(x, high)))
+ 
++// imbridge: the Python side passes IMBRIDGE_PORT and IMBRIDGE_TOKEN in Messages' environment when it launches it.
++static int helperPort(void) {
++    const char *env = getenv("IMBRIDGE_PORT");
++    if (env != NULL && atoi(env) > 0) return atoi(env);
++    // one port per user account: 45700 for the first (uid 501), +1 for each further user
++    return CLAMP(45700 + (int)getuid() - 501, 1024, 65535);
++}
++
++static NSString *helperToken(void) {
++    const char *env = getenv("IMBRIDGE_TOKEN");
++    return (env != NULL && strlen(env) > 0) ? [NSString stringWithUTF8String:env] : nil;
++}
++
+ - (void)connect {
+-    // we need to get the port to open the server on (to allow multiple users to use the bundle)
+-    // we'll base this off the users uid (a unique id for each user, starting from 501)
+-    // we'll subtract 501 to get an id starting at 0, incremented for each user
+-    // then we add this to the base port to get a unique port for the socket
+-    int port = CLAMP(45670 + getuid()-501, 45670, 65535);
++    int port = helperPort();
+     os_log(logger, "Connecting to socket on port %d...", port);
+-    
++
+     // connect to socket
+     asyncSocket = [[GCDAsyncSocket alloc] initWithDelegate:self delegateQueue:dispatch_get_main_queue()];
+-    
++
+     NSError *err = nil;
+     if (![asyncSocket connectToHost:@"localhost" onPort:port error:&err]) {
+         // If there was an error, it's likely something like "already connected" or "no delegate set"
+         os_log_error(logger, "Failed to connect to socket! %@", err);
+     }
+-    
+-    // initiate the 1st read request in anticipation
+-    [asyncSocket readDataWithTimeout:(-1) tag:(1)];
++
++    // initiate the 1st read request in anticipation; requests are newline-delimited JSON, one per line
++    [asyncSocket readDataToData:[GCDAsyncSocket LFData] withTimeout:(-1) tag:(1)];
+ }
+ 
+ - (void)sendMessage:(NSDictionary*)data {
+@@ -107,11 +116,15 @@ - (void)socket:(GCDAsyncSocket*)sock didConnectToHost:(NSString*)host port:(UInt
+ - (void)socket:(GCDAsyncSocket*)sock didReadData:(NSData*)data withTag:(long)tag {
+     NSString* str = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+     os_log(logger, "Received data from server:\r\n%{public}@\r\nwith tag: %{public}ld", str, tag);
+-    // initiate a new read request for the next data item
+-    [asyncSocket readDataWithTimeout:(-1) tag:(1)];
+-    
++    // initiate a new read request for the next line
++    [asyncSocket readDataToData:[GCDAsyncSocket LFData] withTimeout:(-1) tag:(1)];
++
+     // parse and send the data to the handler
+     NSDictionary* dictionary = [self jsonDecode:str];
++    if (![dictionary isKindOfClass:[NSDictionary class]]) {
++        os_log_error(logger, "Ignoring a line that is not a JSON object");
++        return;
++    }
+     // Event is the type of packet that was sent
+     NSString *event = dictionary[@"action"];
+     // Data is the actual information that we need in the packet
+@@ -121,12 +134,22 @@ - (void)socket:(GCDAsyncSocket*)sock didReadData:(NSData*)data withTag:(long)tag
+     if ([dictionary objectForKey:(@"transactionId")] != [NSNull null]) {
+         transaction = dictionary[@"transactionId"];
+     }
++    // imbridge: when Messages was launched with a token, only whoever holds it may drive Messages
++    NSString *token = helperToken();
++    if (token != nil && ![dictionary[@"token"] isEqual:token]) {
++        os_log_error(logger, "Rejected a request without the right token");
++        if (transaction != nil) {
++            [self sendMessage:@{@"transactionId": transaction, @"error": @"unauthorized"}];
++        }
++        return;
++    }
+     [[BlueBubblesHelper sharedInstance] handleServerEvent:event data:eventData transactionId:transaction];
+ }
+ 
+ - (void)socketDidDisconnect:(GCDAsyncSocket *)sock withError:(NSError *)err {
+-    os_log_error(logger, "Disconnected from server, attempting to reconnect in 5 seconds...\r\n(%{public}@)", err);
+-    double delayInSeconds = 5.0;
++    // imbridge: redial every second, so a short-lived client (a CLI command) never waits long for the helper
++    os_log_debug(logger, "Disconnected from server, reconnecting in 1 second (%{public}@)", err);
++    double delayInSeconds = 1.0;
+     dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayInSeconds * NSEC_PER_SEC));
+     dispatch_after(popTime, dispatch_get_main_queue(), ^(void){
+         [self connect];
