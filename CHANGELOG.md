@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.1 (unreleased)
+## 0.3.1 (2026-09-26)
 
 - **Fix (safety):** a phone number no longer resolves to a conversation whose identifier merely contains its digits.
   `send("+15551234567", ...)`, `allow=[...]` and `imbridge allow` matched any one-to-one chat whose identifier
