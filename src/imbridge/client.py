@@ -8,7 +8,9 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
+import tempfile
 import time
 import uuid
 from collections import deque
@@ -32,6 +34,7 @@ from .addresses import (
 )
 from .chatdb import APPLE_EPOCH, ChatDB, ChatInfo, Message
 from .guard import AnyChat, SendGuard, one_to_one_handle
+from .locations import make_pin
 from .polls import PollResults
 from .protocol import HelperBusy, HelperError, HelperNotConnected, HelperServer, HelperUnauthorized
 from .reactions import parse_target, reaction_label, reaction_type
@@ -250,6 +253,10 @@ class Chat:
     ) -> str:
         """Send an image as a sticker, alone or stuck onto one of this chat's messages: see IMBridge.send_sticker."""
         return await self._bridge.send_sticker(self.guid, path, on=on, label=label)
+
+    async def send_location(self, latitude: float, longitude: float, *, name: str | None = None) -> str:
+        """Send a location pin to this chat: see IMBridge.send_location."""
+        return await self._bridge.send_location(self.guid, latitude, longitude, name=name)
 
     async def react_with_sticker(self, message: Message | str, path: str | Path) -> str:
         """Tapback one of this chat's messages with a sticker: see IMBridge.react_with_sticker."""
@@ -591,6 +598,23 @@ class IMBridge:
         request = {"chatGuid": chat_guid, "label": label or "", "selectedMessageGuid": target, "partIndex": part}
         sent = await self._send_staged("send-sticker", source, request, sticker=True)
         self._recent.append((time.monotonic(), chat_guid, f"reaction:{target}:sticker:False" if target else "text:"))
+        self._remember(sent, chat_guid)
+        return sent
+
+    async def send_location(self, chat: str, latitude: float, longitude: float, *, name: str | None = None) -> str:
+        """Send a location pin for these coordinates (and a place name, if you give one), as Messages sends a place
+        from Maps. Only the coordinates you pass: imbridge never shares where the Mac is. Returns the pin's GUID."""
+        card = make_pin(latitude, longitude, name)  # checks the coordinates
+        chat_guid = self.resolve_chat(chat)
+        self._check_send(chat_guid)
+        self._guard.record_send(chat_guid)
+        filename = re.sub(r"[^\w .,'&()-]", "", (name or "").strip())[:60].strip() or "Dropped Pin"
+        with tempfile.TemporaryDirectory() as folder:
+            pin = Path(folder) / f"{filename}.loc.vcf"
+            pin.write_text(card)
+            request = {"chatGuid": chat_guid, "isAudioMessage": 0, "attributedBody": None, "subject": None,
+                       "effectId": None, "selectedMessageGuid": None, "partIndex": 0}
+            sent = await self._send_staged("send-attachment", pin, request)
         self._remember(sent, chat_guid)
         return sent
 

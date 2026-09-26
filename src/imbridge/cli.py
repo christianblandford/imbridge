@@ -41,6 +41,8 @@ def describe(message: Message) -> str:
         if event.kind == "renamed" and not event.name:
             template = "removed the group's name"
         body = template.format(person=event.person or "me", name=f'"{event.name}"', code="/".join(map(str, event.code)))
+    elif place := message.location:
+        body = f"📍 {place.name or 'a pin'} ({place.latitude:.5f}, {place.longitude:.5f})"
     elif poll := message.poll:
         verb = "added a choice to a poll" if poll.update_of else "sent a poll"
         body = f"{verb}: {' / '.join(option.text for option in poll.options)}"
@@ -69,7 +71,8 @@ def _print_poll(results: PollResults, as_json: bool) -> None:
 
 
 SENDING = (
-    "send", "send-file", "send-sticker", "react-sticker", "send-later", "cancel", "send-poll", "vote", "reply", "react",
+    "send", "send-file", "send-sticker", "react-sticker", "send-location", "send-later", "cancel", "send-poll", "vote",
+    "reply", "react",
 )
 
 
@@ -219,6 +222,8 @@ async def _send(args: argparse.Namespace) -> int:
             guid = await im.send_file(args.chat, args.path, reply_to=args.reply_to)
         elif args.command == "send-sticker":
             guid = await im.send_sticker(args.chat, args.path, on=args.on, label=args.label)
+        elif args.command == "send-location":
+            guid = await im.send_location(args.chat, args.latitude, args.longitude, name=args.name)
         elif args.command == "react-sticker":
             guid = await im.react_with_sticker(args.message, args.path)
         elif args.command == "send-later":
@@ -289,6 +294,12 @@ def _parser() -> argparse.ArgumentParser:
     sticker.add_argument("path", help="a PNG, HEIC, GIF, JPEG or WebP (transparent backgrounds look best)")
     sticker.add_argument("--on", metavar="GUID", help="stick it onto this message instead of sending it on its own")
     sticker.add_argument("--label", help="what VoiceOver reads out for it")
+
+    location = commands.add_parser("send-location", parents=[mine], help="send a location pin")
+    location.add_argument("chat", help="phone number, email, group name, or chat GUID")
+    location.add_argument("latitude", type=float)
+    location.add_argument("longitude", type=float)
+    location.add_argument("--name", help="the place's name")
 
     react_sticker = commands.add_parser("react-sticker", parents=[mine], help="tapback a message with a sticker")
     react_sticker.add_argument("message", metavar="GUID")

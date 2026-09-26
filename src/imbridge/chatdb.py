@@ -17,6 +17,7 @@ from typing import Any
 
 from .addresses import address_key, display_address, same_address
 from .config import CHAT_DB
+from .locations import Location, is_pin, read_pin
 from .polls import POLL_TYPES, POLLS_BUNDLE, Poll, PollOption, PollResults, PollVote, fallback_text, parse_poll
 from .reactions import Reaction, parse_reaction
 from .typedstream import attributed_body_mentions, attributed_body_text
@@ -81,6 +82,7 @@ class Message:
     poll: Poll | None = None  # set when this message is a poll, or an update adding a choice to one
     vote: PollVote | None = None  # set when this message is a vote in a poll
     scheduled_for: datetime | None = None  # for your own message waiting in Send Later: when it goes out
+    location: Location | None = None  # set when the message is a location pin (and its file is still on disk)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -407,6 +409,7 @@ class ChatDB:
                     address=display_address(address),
                     **_changes(row),
                     attachments=attachments.get(row["rowid"], ()),
+                    location=_location(attachments.get(row["rowid"], ())),
                     mentions=tuple(map(display_address, attributed_body_mentions(row["attributedBody"]))),
                     event=event,
                     poll=poll if isinstance(poll, Poll) else None,
@@ -476,6 +479,11 @@ def _message_select(columns: set[str], chat_columns: set[str], join_columns: set
         " LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID"
         " LEFT JOIN chat c ON c.ROWID = cmj.chat_id"
     )
+
+
+def _location(attachments: tuple[Attachment, ...]) -> Location | None:
+    """The place in a location pin among a message's attachments."""
+    return next((read_pin(a.path) for a in attachments if is_pin(a.mime_type, a.name)), None)
 
 
 def _waiting(row: sqlite3.Row) -> bool:

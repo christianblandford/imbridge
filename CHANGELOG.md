@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Location pins: a pin someone sends arrives with `Message.location` (a `Location`: latitude, longitude, name,
+  address, Maps url), read from its vCard. `chat.send_location(latitude, longitude, name=None)`, `imbridge
+  send-location` and the MCP tool `send_location` send a pin for the coordinates given, as Messages sends a place from
+  Maps; nothing ever shares where the Mac is.
 - Stickers, sent: `chat.send_sticker(path, on=None, label=None)` (and `imbridge send-sticker`) sends an image as a
   sticker, marked the way Messages marks the stickers you make, on its own or stuck onto one of the chat's messages
   (helper/patches/0009-stickers.patch).

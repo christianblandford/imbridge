@@ -195,6 +195,7 @@ async with IMBridge(allow=["+15551234567"]) as im:
     await chat.send_file("chart.png", reply_to=guid)      # ...as an inline reply
     await chat.send_sticker("party.png", on=guid)         # a sticker, stuck onto a message (or on its own)
     await chat.react_with_sticker(guid, "party.png")      # a sticker as a tapback
+    await chat.send_location(37.3349, -122.0090, name="Apple Park")   # a location pin
     later = await chat.send_later("Happy birthday! 🎂", datetime(2026, 10, 3, 9, 0))  # Messages' Send Later
     chat.scheduled()                                      # what's waiting; chat.cancel_scheduled(later) takes it back
     poll = await chat.send_poll(["Pizza", "Sushi"], question="Lunch?")
@@ -244,6 +245,11 @@ stickers you make from photos: on its own, or stuck onto one of the chat's messa
 any other. A PNG or HEIC with a transparent background looks like one. Incoming stickers are attachments with `is_sticker`; one stuck onto a
 message is a `reaction` of kind `sticker`, and one used as a tapback is kind `sticker_tapback`.
 
+**Location pins.** A pin someone sends arrives with `location` set: the coordinates, the place's name and address
+when it has them, and the Apple Maps link (Messages offloads old attachments, and a pin whose file is gone has no
+`location`). `send_location(latitude, longitude, name=None)` sends a pin for the coordinates you give, as Messages
+sends a place from Maps; imbridge never shares where the Mac is.
+
 **Send Later.** `send_later(text, at)` schedules a message with Messages' own Send Later: it goes out at the start of
 that minute (from a minute to 14 days ahead) even if your program, or Messages, isn't running then. The allowlist
 and rate limits apply when it's scheduled, so disallowing the chat afterwards doesn't stop it: cancel it with
@@ -274,6 +280,7 @@ Every `Message` has these fields:
 | `edited_at`, `edit_count` | set once it's been edited; `text` is then the edited text |
 | `unsent_at` | set once its sender took it back; `text` is then `None` |
 | `scheduled_for` | for your own message waiting in Send Later: when it goes out |
+| `location` | set when the message is a location pin: `latitude`, `longitude`, `name`, `address` and the Maps `url` |
 | `mentions` | the phone numbers and emails it @mentions; `im.mentions_me(message)` checks for this program's address |
 | `poll` | set when the message is a poll (or an update adding a choice to one): `options` (each with `id` and `text`), `creator`, `session`, `update_of` |
 | `vote` | set when the message is a vote in a poll: `poll_guid` and `options`, the voter's whole current choice (empty when they took it back) |
@@ -331,6 +338,7 @@ imbridge send +15551234567 "hello" [--reply-to GUID] [--effect confetti] [--text
 imbridge send-file +15551234567 photo.jpg [--reply-to GUID]
 imbridge send-sticker +15551234567 party.png [--on GUID] [--label "a party hat"]
 imbridge react-sticker GUID party.png                # a sticker as a tapback
+imbridge send-location +15551234567 37.3349 -122.0090 [--name "Apple Park"]
 imbridge send-later +15551234567 "Happy birthday!" --at "2026-10-03 09:00"
 imbridge scheduled [--chat CHAT] [--json]            # what's waiting in Send Later
 imbridge cancel GUID                                 # cancel a message waiting in Send Later
@@ -379,6 +387,7 @@ itself.
 | `reply` | an inline reply to a message |
 | `react` | a tapback with any emoji or a classic |
 | `send_poll`, `vote` | send a poll (and its question), or vote in one |
+| `send_location` | send a location pin |
 | `send_later`, `list_scheduled`, `cancel_scheduled` | Send Later: schedule a message, see what's waiting, cancel it |
 | `edit_message`, `unsend_message` | change or take back a message it sent, within iMessage's limits |
 | `show_typing` | the typing indicator |

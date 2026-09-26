@@ -71,6 +71,9 @@ def _message(message: Message) -> dict[str, Any]:
             item["poll"]["adds_a_choice_to"] = poll.update_of
     if vote := message.vote:
         item["vote"] = {"in_poll": vote.poll_guid, "took_back": not vote.options}
+    if place := message.location:
+        item["location"] = {"latitude": place.latitude, "longitude": place.longitude, "name": place.name,
+                            "address": place.address}
     if message.scheduled_for:
         item["scheduled_for"] = message.scheduled_for.astimezone().isoformat()
     if reaction := message.reaction:
@@ -236,6 +239,15 @@ def build_server(im: IMBridge) -> MCPServer:
         try:
             sent = await (im.unvote if remove else im.vote)(message_guid, option)
             return {"guid": sent, "changed": sent is not None}
+        except Exception as error:
+            raise _refusal(error) from error
+
+    @server.tool(annotations=SENDS)
+    async def send_location(chat: str, latitude: float, longitude: float, name: str | None = None) -> dict[str, Any]:
+        """Send a location pin to an allowed chat: these coordinates, and optionally the place's name. Returns its
+        guid."""
+        try:
+            return {"guid": await im.send_location(chat, latitude, longitude, name=name)}
         except Exception as error:
             raise _refusal(error) from error
 
