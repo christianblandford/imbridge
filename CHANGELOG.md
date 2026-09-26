@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Stickers, read: `Attachment.is_sticker` marks sticker images (sent on their own, stuck onto a message, or used as a
+  tapback), and a sticker used as a tapback (associated types 2007/3007) is a `Reaction` of kind `sticker_tapback`
+  instead of `unknown`. A sticker stuck onto a bubble stays kind `sticker`.
+
 ## 0.4.0 (2026-09-26)
 
 - Send Later: `chat.send_later(text, at)` schedules a message with Messages' own Send Later, to the minute and up to

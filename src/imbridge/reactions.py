@@ -1,8 +1,9 @@
 """Tapbacks: the six classics by name, and any emoji.
 
 In chat.db a tapback is its own message row: associated_message_type says which reaction (2000-2005 add a classic,
-3000-3005 remove one, 2006/3006 add/remove an emoji kept in associated_message_emoji, 1000 is a sticker) and
-associated_message_guid names the target, as "p:<part>/<guid>" or "bp:<guid>".
+3000-3005 remove one, 2006/3006 add/remove an emoji kept in associated_message_emoji, 2007/3007 add/remove a sticker
+used as a tapback, 1000 is a sticker stuck onto the message) and associated_message_guid names the target, as
+"p:<part>/<guid>" or "bp:<guid>". A sticker's image is the row's attachment.
 """
 
 from __future__ import annotations
@@ -13,12 +14,13 @@ CLASSIC_TAPBACKS = ("love", "like", "dislike", "laugh", "emphasize", "question")
 _CODES = {name: 2000 + i for i, name in enumerate(CLASSIC_TAPBACKS)}
 _NAMES = {code: name for name, code in _CODES.items()}
 EMOJI_TAPBACK = 2006
+STICKER_TAPBACK = 2007
 STICKER = 1000
 
 
 @dataclass(frozen=True)
 class Reaction:
-    kind: str  # one of CLASSIC_TAPBACKS, "emoji", "sticker" or "unknown"
+    kind: str  # one of CLASSIC_TAPBACKS, "emoji", "sticker_tapback", "sticker" (stuck on the bubble) or "unknown"
     emoji: str | None  # the emoji, when kind == "emoji"
     removed: bool  # True when this row takes an earlier tapback away
     target_guid: str  # the message reacted to
@@ -71,4 +73,6 @@ def parse_reaction(
         return Reaction(_NAMES[code], None, removed, target, part)
     if code == EMOJI_TAPBACK:
         return Reaction("emoji", emoji, removed, target, part)
+    if code == STICKER_TAPBACK:
+        return Reaction("sticker_tapback", None, removed, target, part)
     return Reaction("unknown", emoji, removed, target, part)

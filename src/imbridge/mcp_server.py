@@ -76,7 +76,10 @@ def _message(message: Message) -> dict[str, Any]:
     if reaction := message.reaction:
         item["tapback"] = {"reaction": reaction.label, "removed": reaction.removed, "on": reaction.target_guid}
     if message.attachments:
-        item["attachments"] = [{"name": a.name, "type": a.mime_type, "path": a.path} for a in message.attachments]
+        item["attachments"] = [
+            {"name": a.name, "type": a.mime_type, "path": a.path, **({"sticker": True} if a.is_sticker else {})}
+            for a in message.attachments
+        ]
     return item
 
 

@@ -51,3 +51,11 @@ def test_not_a_reaction():
     assert parse_reaction(0, None) is None
     assert parse_reaction(None, "p:0/G") is None
     assert parse_reaction(2, "p:0/G") is None
+
+
+def test_sticker_tapbacks():
+    added = parse_reaction(2007, "p:0/GUID")
+    assert (added.kind, added.removed, added.target_guid) == ("sticker_tapback", False, "GUID")
+    assert added.label == "sticker_tapback"
+    assert parse_reaction(3007, "p:0/GUID").removed
+    assert parse_reaction(1000, "p:0/GUID").kind == "sticker"  # stuck onto the bubble, not a tapback

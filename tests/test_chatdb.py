@@ -180,3 +180,13 @@ def test_a_phone_number_only_matches_that_phone_number(chat_db):
     for written in ["+15551234567", "(555) 123-4567", "15551234567"]:
         assert chats.chat_for_handle(written) == ALEX
     assert chats.chat_for_handle("+445551234567") is None  # same last 10 digits, another country
+
+
+def test_stickers_are_marked(chat_db):
+    db = sqlite3.connect(chat_db)
+    db.execute("ALTER TABLE attachment ADD COLUMN is_sticker INTEGER DEFAULT 0")
+    db.execute("UPDATE attachment SET is_sticker = 1")
+    db.commit()
+    db.close()
+    (sticker,) = ChatDB(chat_db).message("M6").attachments
+    assert sticker.is_sticker

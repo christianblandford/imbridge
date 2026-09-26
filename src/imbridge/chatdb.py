@@ -44,6 +44,7 @@ class Attachment:
     path: str | None  # on disk, once downloaded
     mime_type: str | None
     name: str | None
+    is_sticker: bool = False  # a sticker: sent on its own, stuck on a message, or used as a tapback
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,7 @@ class ChatDB:
         self._message_address = "NULL"  # message.destination_caller_id, likewise
         self._has_polls = False  # message.balloon_bundle_id and payload_data, likewise
         self._has_schedules = False  # message.schedule_type and is_delivered, likewise
+        self._sticker = "0"  # attachment.is_sticker, likewise
 
     def close(self) -> None:
         if self._db is not None:
@@ -320,6 +322,7 @@ class ChatDB:
                 message_columns = {row[1] for row in db.execute("PRAGMA table_info(message)")}
                 join_columns = {row[1] for row in db.execute("PRAGMA table_info(chat_message_join)")}
                 chat_columns = {row[1] for row in db.execute("PRAGMA table_info(chat)")}
+                attachment_columns = {row[1] for row in db.execute("PRAGMA table_info(attachment)")}
             except sqlite3.OperationalError as e:
                 raise FullDiskAccessError(
                     f"can't read {self.path} ({e}). Give Full Disk Access to the app running Python: "
@@ -330,6 +333,8 @@ class ChatDB:
             self._select = _message_select(message_columns, chat_columns, join_columns)
             self._has_polls = {"balloon_bundle_id", "payload_data"} <= message_columns
             self._has_schedules = {"schedule_type", "is_delivered"} <= message_columns
+            if "is_sticker" in attachment_columns:
+                self._sticker = "a.is_sticker"
             if "last_addressed_handle" in chat_columns:
                 self._chat_address = "c.last_addressed_handle"
             if "destination_caller_id" in message_columns:
@@ -407,7 +412,8 @@ class ChatDB:
             return {}
         marks = ",".join("?" * len(rowids))
         rows = self._query(
-            "SELECT j.message_id, a.guid, a.filename, a.mime_type, a.transfer_name FROM message_attachment_join j"
+            f"SELECT j.message_id, a.guid, a.filename, a.mime_type, a.transfer_name, {self._sticker} AS is_sticker"
+            " FROM message_attachment_join j"
             f" JOIN attachment a ON a.ROWID = j.attachment_id WHERE j.message_id IN ({marks})",
             rowids,
         )
@@ -415,7 +421,7 @@ class ChatDB:
         for row in rows:
             path = str(Path(row["filename"]).expanduser()) if row["filename"] else None
             found.setdefault(row["message_id"], []).append(
-                Attachment(row["guid"], path, row["mime_type"], row["transfer_name"])
+                Attachment(row["guid"], path, row["mime_type"], row["transfer_name"], bool(row["is_sticker"]))
             )
         return {rowid: tuple(items) for rowid, items in found.items()}
 
