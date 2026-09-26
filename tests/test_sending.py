@@ -11,6 +11,7 @@ from imbridge import (
     ANY_CHAT,
     AddressNotChosen,
     ChatNotFound,
+    HelperBusy,
     HelperError,
     IMBridge,
     NewContact,
@@ -179,3 +180,19 @@ def test_focus_status(chat_db):
     assert requests[0]["data"] == {"address": "+15551234567"}
     with pytest.raises(ValueError, match="per person"):
         run(chat_db, lambda im: im.chat(CREW).focus_status())
+
+
+def test_another_program_holding_the_helper_is_reported_before_anything_is_sent(chat_db):
+    async def scenario():
+        port = free_port()
+        other = await asyncio.start_server(lambda reader, writer: None, host=["127.0.0.1", "::1"], port=port)
+        try:
+            im = IMBridge(chat_db=chat_db, token="t", port=port, allow=[ALEX])
+            with pytest.raises(HelperBusy, match="Nothing was sent"):
+                await im.send(ALEX, "hi")
+            await im.close()
+        finally:
+            other.close()
+            await other.wait_closed()
+
+    asyncio.run(scenario())

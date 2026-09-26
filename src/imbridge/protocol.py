@@ -32,6 +32,11 @@ class HelperNotConnected(HelperError):
     """No helper is connected, or it disconnected mid-request."""
 
 
+class HelperBusy(HelperNotConnected):
+    """Another program on this Mac is using the helper; only one imbridge program can send at a time. Nothing was
+    sent, so it's safe to retry once that program is done."""
+
+
 class HelperUnauthorized(HelperError):
     """The helper in Messages was launched with a different token, or by another tool."""
 

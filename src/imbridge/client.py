@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
 import os
@@ -12,7 +13,7 @@ import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +31,7 @@ from .addresses import (
 from .chatdb import APPLE_EPOCH, ChatDB, ChatInfo, Message
 from .guard import AnyChat, SendGuard, one_to_one_handle
 from .polls import PollResults
-from .protocol import HelperError, HelperNotConnected, HelperServer, HelperUnauthorized
+from .protocol import HelperBusy, HelperError, HelperNotConnected, HelperServer, HelperUnauthorized
 from .reactions import parse_target, reaction_label, reaction_type
 from .richtext import Span, Text, parts, plain, spans
 
@@ -44,6 +45,7 @@ ECHO_WINDOW = 60.0
 EDIT_WINDOW, MAX_EDITS, UNSEND_WINDOW = 15 * 60, 5, 2 * 60
 # So only recent messages can change; the changes stream watches this far back.
 CHANGE_WINDOW = EDIT_WINDOW + 5 * 60
+CANCEL_CHECK = 10.0  # seconds to wait for chat.db to show a cancelled Send Later message gone
 MAX_POLL_BYTES = 4096  # a poll's options, as Messages encodes them, must fit in this
 
 
@@ -88,6 +90,10 @@ class EditLimit(RuntimeError):
 
 class WrongChat(ValueError):
     """A Chat was asked to reply or react to a message from another chat."""
+
+
+class SendLaterFailed(RuntimeError):
+    """Messages didn't hold a message for later as asked (or didn't cancel it); the message says what it did."""
 
 
 def _poll_size(options: list[str], creator: str) -> int:
@@ -225,6 +231,23 @@ class Chat:
         """This chat's messages as they're edited or unsent, from now on (see IMBridge.changes)."""
         async for message in self._bridge._changes(self.guid, include_from_me):
             yield message
+
+    async def send_later(self, text: str, at: datetime) -> str:
+        """Schedule a message for later in this chat: see IMBridge.send_later."""
+        return await self._bridge.send_later(self.guid, text, at)
+
+    def scheduled(self) -> list[Message]:
+        """Your messages waiting in Send Later in this chat, soonest first."""
+        return self._bridge.scheduled(self.guid)
+
+    async def cancel_scheduled(self, message: Message | str) -> None:
+        """Take back one of this chat's messages waiting in Send Later."""
+        if isinstance(message, Message) and message.chat_guid != self.guid:
+            raise WrongChat(f"message {message.guid} is in {message.chat_guid}, not in this chat ({self.guid})")
+        found = self._bridge.message(message.guid if isinstance(message, Message) else message)
+        if found is not None and found.chat_guid != self.guid:
+            raise WrongChat(f"message {found.guid} is in {found.chat_guid}, not in this chat ({self.guid})")
+        await self._bridge.cancel_scheduled(message)
 
     async def send_poll(self, options: Iterable[str], *, question: str | None = None) -> str:
         """Send a poll offering these options, and the question as a message after it; see IMBridge.send_poll."""
@@ -523,6 +546,83 @@ class IMBridge:
         if not mine:
             raise ValueError(f"can't tell which of your addresses {chat_guid} is on; set address= to say")
         return display_address(mine)
+
+    async def send_later(self, chat: str, text: str, at: datetime) -> str:
+        """Schedule a message with Messages' Send Later; returns its GUID.
+
+        Messages sends it at the start of the minute `at` falls in (a minute to 14 days ahead; a naive datetime is
+        local time), whether or not this program is still running. The allowlist and rate limits apply now, when
+        it's scheduled. One message per chat can wait at a time: IMCore files a second one in your own conversation
+        instead. imbridge checks Messages held it in the right chat, and raises SendLaterFailed if not.
+        """
+        text = text.strip()
+        if not text:
+            raise ValueError("there's no text to send")
+        chat_guid = self.resolve_chat(chat)
+        self._check_send(chat_guid)
+        when = at.astimezone(timezone.utc).replace(second=0, microsecond=0)
+        now = datetime.now(timezone.utc)
+        if when < now + timedelta(minutes=1) or when > now + timedelta(days=14):
+            raise ValueError("Send Later takes a time from a minute to 14 days ahead")
+        if await asyncio.to_thread(self.db.scheduled, chat_guid):
+            raise ValueError(
+                f"{chat_guid} already has a message waiting to be sent later, and Messages holds one per chat (a "
+                "second ends up in your own conversation). Cancel it first, or wait until it has gone out."
+            )
+        if await self._is_own_chat(chat_guid):  # asks Messages, so after every check that doesn't
+            raise ValueError("imbridge doesn't schedule messages to yourself: your own devices get them right away")
+        self._guard.record_send(chat_guid)
+        request = {"chatGuid": chat_guid, "message": text, "deliverAt": when.timestamp()}
+        result = await self._request("send-later", request)
+        sent = result.get("identifier")
+        held = await self._stored(sent)  # Messages doesn't always do as asked, and says nothing: check
+        if held is None or held.chat_guid != chat_guid:
+            where = held.chat_guid if held else "no conversation imbridge can find"
+            raise SendLaterFailed(
+                f"Messages filed the message in {where} instead of {chat_guid}, so it won't reach them"
+            )
+        if held.scheduled_for is None:
+            raise SendLaterFailed("Messages sent the message right away instead of holding it for later")
+        self._remember(sent, chat_guid)
+        return sent
+
+    async def cancel_scheduled(self, message: Message | str) -> None:
+        """Take back a message waiting in Send Later, before it goes out."""
+        guid = message.guid if isinstance(message, Message) else parse_target(message)[0]
+        found = await asyncio.to_thread(self.db.message, guid)
+        if found is None or not found.is_from_me or found.scheduled_for is None or found.chat_guid is None:
+            raise ValueError(f"{guid} isn't a message of yours waiting to be sent later (it may have gone out)")
+        self._check_send(found.chat_guid)  # retracting reaches Messages like anything else: allowed chats only
+        await self._request("cancel-scheduled", {"chatGuid": found.chat_guid, "messageGuid": guid})
+        deadline = time.monotonic() + CANCEL_CHECK
+        while (current := await asyncio.to_thread(self.db.message, guid)) and current.scheduled_for:
+            if time.monotonic() >= deadline:
+                raise SendLaterFailed(f"Messages still has {guid} scheduled")
+            await asyncio.sleep(0.25)
+
+    def scheduled(self, chat: str | None = None) -> list[Message]:
+        """Your messages waiting in Send Later (every chat, or one), soonest first."""
+        self._check_address()
+        found = self.db.scheduled(self.resolve_chat(chat) if chat else None)
+        return [message for message in found if self._admits(message, strict=False)]
+
+    async def _is_own_chat(self, chat_guid: str) -> bool:
+        """A one-to-one chat with an address the signed-in account uses on this Mac: a chat with yourself."""
+        handle = one_to_one_handle(chat_guid)
+        if handle is None:
+            return False
+        aliases = (await self._request("get-account-info", {})).get("aliases") or []
+        return address_key(handle) in {address_key(alias.get("Alias")) for alias in aliases if isinstance(alias, dict)}
+
+    async def _stored(self, guid: str | None, wait: float = 6.0) -> Message | None:
+        """A message just sent, as chat.db records it, once it's linked to its chat."""
+        deadline = time.monotonic() + wait
+        while guid:
+            found = await asyncio.to_thread(self.db.message, guid)
+            if (found is not None and found.chat_guid) or time.monotonic() >= deadline:
+                return found
+            await asyncio.sleep(0.25)
+        return None
 
     async def send_file(self, chat: str, path: str | Path, *, reply_to: str | None = None) -> str:
         """Send a file (a photo, GIF, video or document) to an allowed chat; returns the new message's GUID.
@@ -1007,7 +1107,15 @@ class IMBridge:
     async def _ensure_helper(self, timeout: float = 45.0) -> None:
         async with self._helper_lock:
             if not self._server.listening:
-                await self._server.start()
+                try:
+                    await self._server.start()
+                except OSError as error:
+                    if error.errno != errno.EADDRINUSE:
+                        raise
+                    raise HelperBusy(
+                        f"another program on this Mac is using the helper (port {self._server.port}); only one "
+                        "imbridge program can send at a time. Nothing was sent."
+                    ) from None
             if self._server.connected:
                 return
             try:

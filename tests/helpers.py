@@ -100,6 +100,7 @@ class FakeMessages:
                 request["file_existed"] = os.path.exists(request["data"]["filePath"])  # when Messages would read it
             self.requests.append(request)
             reply = {"transactionId": request["transactionId"], "identifier": f"SENT-{len(self.requests)}"}
-            reply.update(self.replies.get(request["action"], {}))
+            answer = self.replies.get(request["action"], {})  # a reply, or a function of the request (to act on it)
+            reply.update(answer(request) if callable(answer) else answer)
             writer.write(json.dumps(reply).encode() + b"\r\n")
             await writer.drain()

@@ -4,10 +4,10 @@ from importlib.metadata import PackageNotFoundError, version
 
 from .addresses import ANY_ADDRESS, AddressNotChosen, WrongAddress
 from .chatdb import Attachment, ChatDB, ChatInfo, FullDiskAccessError, GroupEvent, Message
-from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, WrongChat
+from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, SendLaterFailed, WrongChat
 from .guard import ANY_CHAT, NewContact, RateLimited, SendNotAllowed
 from .polls import Poll, PollOption, PollResults, PollVote
-from .protocol import HelperError, HelperNotConnected, HelperUnauthorized
+from .protocol import HelperBusy, HelperError, HelperNotConnected, HelperUnauthorized
 from .reactions import CLASSIC_TAPBACKS, Reaction
 from .richtext import TEXT_EFFECTS, Span
 
@@ -31,6 +31,7 @@ __all__ = [
     "EditLimit",
     "FullDiskAccessError",
     "GroupEvent",
+    "HelperBusy",
     "HelperError",
     "HelperNotConnected",
     "HelperUnauthorized",
@@ -43,6 +44,7 @@ __all__ = [
     "PollVote",
     "RateLimited",
     "Reaction",
+    "SendLaterFailed",
     "SendNotAllowed",
     "Span",
     "TEXT_EFFECTS",

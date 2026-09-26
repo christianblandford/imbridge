@@ -193,6 +193,8 @@ async with IMBridge(allow=["+15551234567"]) as im:
     await chat.react(guid, "🔥", remove=True)
     await chat.send_file("chart.png")                     # a photo, GIF, video or document
     await chat.send_file("chart.png", reply_to=guid)      # ...as an inline reply
+    later = await chat.send_later("Happy birthday! 🎂", datetime(2026, 10, 3, 9, 0))  # Messages' Send Later
+    chat.scheduled()                                      # what's waiting; chat.cancel_scheduled(later) takes it back
     poll = await chat.send_poll(["Pizza", "Sushi"], question="Lunch?")
     await chat.vote(poll, "Pizza")                        # keeps your other choices; chat.unvote(poll, "Pizza")
     await chat.typing()                                   # typing indicator on; chat.typing(False) turns it off
@@ -234,6 +236,13 @@ stretch), or `Span("Sam", mention="+15551234567")` to @mention someone in the ch
 someone outside the chat is refused before anything is sent (Messages would quietly send plain text). iOS 18 and
 macOS 15 or later show formatting; older devices get the plain text. A new conversation starts with plain text.
 
+**Send Later.** `send_later(text, at)` schedules a message with Messages' own Send Later: it goes out at the start of
+that minute (from a minute to 14 days ahead) even if your program, or Messages, isn't running then. The allowlist
+and rate limits apply when it's scheduled, so disallowing the chat afterwards doesn't stop it: cancel it with
+`cancel_scheduled()`. `scheduled()` lists what's waiting. IMCore quietly files a second message scheduled in the same
+chat in your own conversation instead, so imbridge allows one waiting per chat, refuses chats with yourself, and
+checks that Messages really held each message in the right chat (`SendLaterFailed` if not).
+
 **Starting conversations.** `im.send()` to a phone number or email you have no conversation with starts one, over
 iMessage if they have it and SMS otherwise. They have to be allowed: `IMBridge(allow=[NewContact("+15557654321")])`
 in code, or `imbridge allow +15557654321`. The number needs its country code; a local number is refused, so a missing
@@ -256,6 +265,7 @@ Every `Message` has these fields:
 | `attachments` | each with a `path` on disk, `mime_type` and `name` |
 | `edited_at`, `edit_count` | set once it's been edited; `text` is then the edited text |
 | `unsent_at` | set once its sender took it back; `text` is then `None` |
+| `scheduled_for` | for your own message waiting in Send Later: when it goes out |
 | `mentions` | the phone numbers and emails it @mentions; `im.mentions_me(message)` checks for this program's address |
 | `poll` | set when the message is a poll (or an update adding a choice to one): `options` (each with `id` and `text`), `creator`, `session`, `update_of` |
 | `vote` | set when the message is a vote in a poll: `poll_guid` and `options`, the voter's whole current choice (empty when they took it back) |
@@ -268,7 +278,8 @@ into Messages whenever none answers; pass `inject=False` if something else manag
 touches `chat.db`, so it works without the helper.
 
 **Errors.** `SendNotAllowed` means the chat isn't allowed. `RateLimited` means a limit was hit. `EditLimit` means
-iMessage's own limits on editing or unsending have passed (`kind` says which). `AddressNotChosen`
+iMessage's own limits on editing or unsending have passed (`kind` says which). `SendLaterFailed` means Messages
+didn't hold (or cancel) a Send Later message as asked. `AddressNotChosen`
 means this Mac gets messages at several of your phone numbers and the program hasn't said which it is. `WrongAddress`
 means a chat or message is on another of your addresses, or a new conversation would start from one. `WrongChat`
 means a chat was handed another chat's message. `ChatNotFound` means no existing conversation matches, and it isn't
@@ -310,6 +321,9 @@ imbridge disallow CHAT | --any
 imbridge allowed
 imbridge send +15551234567 "hello" [--reply-to GUID] [--effect confetti] [--text-effect big]
 imbridge send-file +15551234567 photo.jpg [--reply-to GUID]
+imbridge send-later +15551234567 "Happy birthday!" --at "2026-10-03 09:00"
+imbridge scheduled [--chat CHAT] [--json]            # what's waiting in Send Later
+imbridge cancel GUID                                 # cancel a message waiting in Send Later
 imbridge send-poll +15551234567 Pizza Sushi [--question "Lunch?"]
 imbridge vote GUID Pizza [--remove]                  # the poll's GUID; keeps your other choices
 imbridge reply GUID "inline reply"
@@ -355,6 +369,7 @@ itself.
 | `reply` | an inline reply to a message |
 | `react` | a tapback with any emoji or a classic |
 | `send_poll`, `vote` | send a poll (and its question), or vote in one |
+| `send_later`, `list_scheduled`, `cancel_scheduled` | Send Later: schedule a message, see what's waiting, cancel it |
 | `edit_message`, `unsend_message` | change or take back a message it sent, within iMessage's limits |
 | `show_typing` | the typing indicator |
 | `whoami` | the address it answers on and the chats it may send to |

@@ -1,0 +1,124 @@
+imbridge Send Later (macOS 15+): send-later {chatGuid, message, deliverAt (Unix seconds)} schedules a message with the
+factory made for it (instantMessageWithText:...scheduledDate:), after checking the chat supports Send Later: a chat
+that doesn't sends at once. cancel-scheduled {chatGuid, messageGuid} pages the message in and retracts its parts from
+the message's own chat item, as Messages' Cancel does (cancelScheduledMessageItem:cancelType: returns quietly and
+leaves it scheduled). Both validate input and catch exceptions.
+
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+index b16c586..fb7ae01 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
++++ b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+@@ -232,6 +232,94 @@ static void IMBSendPollVote(IMChat *chat, id pollGuid, id sessionIdentifier, id
+ }
+ 
+ 
++// imbridge: Send Later (macOS 15+). A scheduled message is built by the factory made for it, which takes the delivery
++// date alone; building one by hand states the time twice, and IMCore has been seen honouring one and not the other
++// (sending at once, or filing it in your own conversation). A chat that can't schedule sends at once, so ask first.
++static void IMBSendLater(IMChat *chat, id text, id deliverAt, NSString *transaction) {
++    if (![text isKindOfClass:[NSString class]] || [text length] == 0 || ![deliverAt isKindOfClass:[NSNumber class]]) {
++        IMBReply(transaction, @{@"error": @"Send Later needs a message and deliverAt (Unix seconds)"});
++        return;
++    }
++    NSDate *when = [NSDate dateWithTimeIntervalSince1970:[deliverAt doubleValue]];
++    if ([when timeIntervalSinceNow] < 30) {
++        IMBReply(transaction, @{@"error": @"deliverAt has to be in the future"});
++        return;
++    }
++    SEL supports = NSSelectorFromString(@"_supportsSendLater");
++    SEL factory = NSSelectorFromString(@"instantMessageWithText:messageSubject:flags:threadIdentifier:"
++                                       "associatedMessageGUID:scheduledDate:");
++    if (![chat respondsToSelector:supports] || ![IMMessage respondsToSelector:factory]) {
++        IMBReply(transaction, @{@"error": @"This macOS can't schedule messages"});
++        return;
++    }
++    if (!((BOOL (*)(id, SEL))objc_msgSend)(chat, supports)) {
++        IMBReply(transaction, @{@"error": @"This conversation can't schedule messages (Send Later needs iMessage)"});
++        return;
++    }
++    @try {
++        NSAttributedString *body = [[NSAttributedString alloc] initWithString:text
++                                                                   attributes:@{@"__kIMMessagePartAttributeName": @0}];
++        IMMessage *message = ((id (*)(id, SEL, id, id, unsigned long long, id, id, id))objc_msgSend)(
++            [IMMessage class], factory, body, nil, 1, nil, nil, when);
++        if (message == nil) {
++            IMBReply(transaction, @{@"error": @"Couldn't build the scheduled message"});
++            return;
++        }
++        [chat sendMessage:message];
++        IMBReply(transaction, @{@"identifier": [message guid] ?: @""});
++    } @catch (NSException *exception) {
++        IMBReply(transaction, @{@"error": [NSString stringWithFormat:@"Couldn't schedule: %@", exception.reason]});
++    }
++}
++
++static id IMBValue(id object, NSString *key) {
++    @try {
++        return [object valueForKey:key];
++    } @catch (NSException *exception) {
++        return nil;
++    }
++}
++
++// Cancels a scheduled message the way Messages' own Cancel does: retracting its parts from the chat item, freshly paged
++// in. cancelScheduledMessageItem:cancelType: returns quietly and leaves the message scheduled.
++static void IMBCancelScheduled(IMChat *chat, id messageGuid, NSString *transaction) {
++    SEL retract = NSSelectorFromString(@"retractScheduledMessagePartIndexes:fromChatItem:");
++    SEL load = NSSelectorFromString(@"loadMessagesBeforeAndAfterGUID:numberOfMessagesToLoadBeforeGUID:"
++                                    "numberOfMessagesToLoadAfterGUID:loadImmediately:threadIdentifier:");
++    SEL messageItem = NSSelectorFromString(@"messageItem");
++    if (![messageGuid isKindOfClass:[NSString class]] || [messageGuid length] == 0) {
++        IMBReply(transaction, @{@"error": @"Cancelling needs messageGuid"});
++        return;
++    }
++    if (![chat respondsToSelector:retract] || ![chat respondsToSelector:load]) {
++        IMBReply(transaction, @{@"error": @"This macOS can't cancel scheduled messages"});
++        return;
++    }
++    @try {
++        ((id (*)(id, SEL, id, unsigned long long, unsigned long long, BOOL, id))objc_msgSend)(
++            chat, load, messageGuid, 5, 5, YES, nil);
++        // The message's own chat item: the scheduled section's date header refers to the same message item, but
++        // isn't one (it has no -messageItem, which retracting needs)
++        id found = nil;
++        for (id item in [chat chatItems]) {
++            if ([item respondsToSelector:messageItem]
++                    && [messageGuid isEqual:IMBValue(((id (*)(id, SEL))objc_msgSend)(item, messageItem), @"guid")]) {
++                found = item;
++                break;
++            }
++        }
++        if (found == nil) {
++            IMBReply(transaction, @{@"error": @"That scheduled message isn't in this chat"});
++            return;
++        }
++        ((void (*)(id, SEL, id, id))objc_msgSend)(chat, retract, [NSIndexSet indexSetWithIndex:0], found);
++        IMBReply(transaction, @{});
++    } @catch (NSException *exception) {
++        IMBReply(transaction, @{@"error": [NSString stringWithFormat:@"Couldn't cancel: %@", exception.reason]});
++    }
++}
++
++
+ @implementation BlueBubblesHelper
+ 
+ static os_log_t logger;
+@@ -612,6 +700,18 @@ -(void) handleServerEvent: (NSString*)event data: (NSDictionary*)data transactio
+                 [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction}];
+             }
+         }
++    // imbridge: schedule a message (Send Later)
++    } else if ([event isEqualToString:@"send-later"]) {
++        IMChat *chat = [[BlueBubblesHelper sharedInstance] getIMChatFromGuid:data[@"chatGuid"] transaction:transaction];
++        if (chat != nil) {
++            IMBSendLater(chat, data[@"message"], data[@"deliverAt"], transaction);
++        }
++    // imbridge: cancel a scheduled message
++    } else if ([event isEqualToString:@"cancel-scheduled"]) {
++        IMChat *chat = [[BlueBubblesHelper sharedInstance] getIMChatFromGuid:data[@"chatGuid"] transaction:transaction];
++        if (chat != nil) {
++            IMBCancelScheduled(chat, data[@"messageGuid"], transaction);
++        }
+     // imbridge: send a poll
+     } else if ([event isEqualToString:@"send-poll"]) {
+         IMChat *chat = [[BlueBubblesHelper sharedInstance] getIMChatFromGuid:data[@"chatGuid"] transaction:transaction];

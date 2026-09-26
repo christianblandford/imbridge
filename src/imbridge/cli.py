@@ -6,11 +6,12 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import datetime
 
 from . import __version__
 from .addresses import ANY_ADDRESS, AddressNotChosen, WrongAddress, contact_address
 from .chatdb import FullDiskAccessError, Message
-from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, WrongChat
+from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, SendLaterFailed, WrongChat
 from .doctor import run_checks
 from .guard import ANY_LINE, RateLimited, SendNotAllowed, read_allowed, write_allowed
 from .polls import PollResults
@@ -65,6 +66,13 @@ def _print_poll(results: PollResults, as_json: bool) -> None:
     for option in results.to_dict()["options"]:
         voters = f"  ({', '.join(option['voters'])})" if option["voters"] else ""
         print(f"  {option['votes']:>3}  {option['text']}{voters}")
+
+
+def _when(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(f"{value!r} isn't a date and time like 2026-09-27 09:00") from None
 
 
 def _label(chat: Chat) -> str:
@@ -204,6 +212,11 @@ async def _send(args: argparse.Namespace) -> int:
             guid = await im.send(args.chat, text, reply_to=args.reply_to, effect=args.effect)
         elif args.command == "send-file":
             guid = await im.send_file(args.chat, args.path, reply_to=args.reply_to)
+        elif args.command == "send-later":
+            guid = await im.send_later(args.chat, args.text, _when(args.at))
+        elif args.command == "cancel":
+            await im.cancel_scheduled(args.message)
+            guid = f"cancelled {args.message}"
         elif args.command == "send-poll":
             guid = await im.send_poll(args.chat, args.options, question=args.question)
         elif args.command == "vote":
@@ -261,6 +274,16 @@ def _parser() -> argparse.ArgumentParser:
     send_file.add_argument("chat", help="phone number, email, group name, or chat GUID")
     send_file.add_argument("path")
     send_file.add_argument("--reply-to", metavar="GUID", help="send it as an inline reply to this message")
+
+    later = commands.add_parser("send-later", parents=[mine], help="schedule a message with Send Later")
+    later.add_argument("chat", help="phone number, email, group name, or chat GUID")
+    later.add_argument("text")
+    later.add_argument("--at", required=True, help='when, like "2026-09-27 09:00" (local time)')
+    cancel = commands.add_parser("cancel", parents=[mine], help="cancel a message waiting in Send Later")
+    cancel.add_argument("message", metavar="GUID")
+    scheduled = commands.add_parser("scheduled", parents=[mine], help="list messages waiting in Send Later")
+    scheduled.add_argument("--chat", help="only this chat")
+    scheduled.add_argument("--json", action="store_true", help="one JSON object per line")
 
     send_poll = commands.add_parser("send-poll", parents=[mine], help="send a poll to an allowed chat")
     send_poll.add_argument("chat", help="phone number, email, group name, or chat GUID")
@@ -323,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
             return _allowed()
         if args.command == "start":
             return asyncio.run(_start(args))
-        if args.command in ("send", "send-file", "send-poll", "vote", "reply", "react"):
+        if args.command in ("send", "send-file", "send-later", "cancel", "send-poll", "vote", "reply", "react"):
             return asyncio.run(_send(args))
         if args.command == "watch":
             return asyncio.run(_watch(args))
@@ -340,6 +363,11 @@ def main(argv: list[str] | None = None) -> int:
                     when = chat.last_message_at.astimezone().strftime("%Y-%m-%d %H:%M") if chat.last_message_at else "-"
                     marker = "  [can send]" if chat.can_send else ""
                     print(f"{chat.guid}  {_label(chat)}  ({when}){marker}")
+        elif args.command == "scheduled":
+            for message in im.scheduled(args.chat):
+                when = message.scheduled_for.astimezone().strftime("%Y-%m-%d %H:%M")
+                line = f"{when}  {message.chat_guid}: {message.text}  <{message.guid}>"
+                print(json.dumps(message.to_dict(), ensure_ascii=False) if args.json else line)
         elif args.command == "poll":
             results = im.poll(args.message)
             if results is None:
@@ -357,6 +385,7 @@ def main(argv: list[str] | None = None) -> int:
         ChatNotFound,
         WrongChat,
         EditLimit,
+        SendLaterFailed,
         FileNotFoundError,
         ValueError,
         SendNotAllowed,

@@ -80,12 +80,14 @@ class Message:
     event: GroupEvent | None = None  # set when this row records a change to a group rather than a message
     poll: Poll | None = None  # set when this message is a poll, or an update adding a choice to one
     vote: PollVote | None = None  # set when this message is a vote in a poll
+    scheduled_for: datetime | None = None  # for your own message waiting in Send Later: when it goes out
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["date"] = self.date.isoformat() if self.date else None
         data["edited_at"] = self.edited_at.isoformat() if self.edited_at else None
         data["unsent_at"] = self.unsent_at.isoformat() if self.unsent_at else None
+        data["scheduled_for"] = self.scheduled_for.isoformat() if self.scheduled_for else None
         return data
 
 
@@ -117,6 +119,7 @@ class ChatDB:
         self._retracted = "0"  # message.date_retracted, likewise
         self._message_address = "NULL"  # message.destination_caller_id, likewise
         self._has_polls = False  # message.balloon_bundle_id and payload_data, likewise
+        self._has_schedules = False  # message.schedule_type and is_delivered, likewise
 
     def close(self) -> None:
         if self._db is not None:
@@ -155,6 +158,16 @@ class ChatDB:
         """The chat's latest messages, oldest first; with events, group changes too."""
         found = self._messages(f"c.guid = ? AND {_kinds(events)} ORDER BY m.ROWID DESC LIMIT ?", (chat_guid, limit))
         return found[::-1]
+
+    def scheduled(self, chat_guid: str | None = None) -> list[Message]:
+        """Your messages waiting in Send Later (in one chat, or all), soonest first."""
+        self._connect()
+        if not self._has_schedules:
+            return []
+        where = "m.is_from_me = 1 AND m.schedule_type = 2 AND m.is_delivered = 0"
+        if chat_guid is None:
+            return self._messages(f"{where} ORDER BY m.date", ())
+        return self._messages(f"{where} AND c.guid = ? ORDER BY m.date", (chat_guid,))
 
     def poll(self, guid: str, *, mine: Iterable[str] = ()) -> PollResults | None:
         """The current state of a poll, from the poll's GUID, an update's, or a vote's. Votes sent from any address
@@ -312,6 +325,7 @@ class ChatDB:
                 raise FullDiskAccessError(f"{self.path} has no message table (is this Messages' chat.db?)")
             self._select = _message_select(message_columns, chat_columns, join_columns)
             self._has_polls = {"balloon_bundle_id", "payload_data"} <= message_columns
+            self._has_schedules = {"schedule_type", "is_delivered"} <= message_columns
             if "last_addressed_handle" in chat_columns:
                 self._chat_address = "c.last_addressed_handle"
             if "destination_caller_id" in message_columns:
@@ -379,6 +393,7 @@ class ChatDB:
                     event=event,
                     poll=poll if isinstance(poll, Poll) else None,
                     vote=poll if isinstance(poll, PollVote) else None,
+                    scheduled_for=apple_time(row["date"]) if _waiting(row) else None,
                 )
             )
         return messages
@@ -432,6 +447,7 @@ def _message_select(columns: set[str], chat_columns: set[str], join_columns: set
         f" {column('associated_message_emoji')}, {column('thread_originator_guid')}, {column('destination_caller_id')},"
         f" {column('date_edited')}, {column('date_retracted')}, {column('message_summary_info')},"
         f" {column('item_type')}, {column('group_action_type')}, {column('group_title')}, {polls}"
+        f" {column('schedule_type')}, {column('is_delivered')},"
         f" {'oh.id' if others else 'NULL'} AS other_handle_id,"
         f" {'c.last_addressed_handle' if 'last_addressed_handle' in chat_columns else 'NULL'} AS chat_address,"
         " h.id AS sender, c.guid AS chat_guid, c.display_name AS chat_name, c.style AS chat_style"
@@ -441,6 +457,11 @@ def _message_select(columns: set[str], chat_columns: set[str], join_columns: set
         " LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID"
         " LEFT JOIN chat c ON c.ROWID = cmj.chat_id"
     )
+
+
+def _waiting(row: sqlite3.Row) -> bool:
+    """Your own message that Send Later is still holding (schedule_type 2 until it goes out)."""
+    return bool(row["is_from_me"]) and row["schedule_type"] == 2 and not row["is_delivered"]
 
 
 def _event(row: sqlite3.Row) -> GroupEvent | None:
