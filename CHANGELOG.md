@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-09-26)
 
 - Retrying safely: `send()`, `reply()` and `send_file()` (and a new conversation's first message) take a `guid` you
   choose, a UUID, and the message is created with it (helper/patches/0011-chosen-guids.patch). Record it before

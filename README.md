@@ -40,8 +40,8 @@ claude mcp add imessage -- imbridge mcp   # then: "text Alex that I'm running la
 - **It can't spam your contacts.** imbridge sends nowhere until you allow a chat, either in your code or with
   `imbridge allow`, which only a person at a terminal can run. A chat handle refuses messages from other chats, rate
   limits stop runaway loops, and with two numbers on one Apple ID it only answers on the one you choose.
-- **Any-emoji tapbacks.** The classic six plus any emoji, as iOS 18 and macOS 15 allow. BlueBubbles' released helper
-  and imsg can only send the classic six.
+- **Any-emoji and sticker tapbacks.** The classic six, any emoji, or a sticker, as iOS 18 and macOS 15 allow.
+  BlueBubbles' released helper and imsg can only send the classic six.
 - **Real iMessage features.** Inline replies, tapbacks, polls, photos and files, edits and unsends, message effects,
   typing indicators and read receipts, done by Messages itself rather than by scripting its UI.
 - **Current.** Tested on macOS 27. It fixes a macOS 26+ crash in BlueBubbles' helper when it replies or reacts while
@@ -49,20 +49,31 @@ claude mcp add imessage -- imbridge mcp   # then: "text Alex that I'm running la
 
 ## How it compares
 
-As of September 2026:
+As of September 2026, from each project's code:
 
-| | imbridge | BlueBubbles Server | imsg |
-|---|---|---|---|
-| What you run | a Python library | an Electron app with a REST/WebSocket server | a Swift CLI with a JSON-RPC mode |
-| Send and receive text | ✓ | ✓ | ✓, without disabling SIP |
-| Inline replies and targeted tapbacks | ✓ | ✓ (Private API) | ✓ (its helper) |
-| Send any-emoji tapbacks | ✓ | not in a release | ✗ (it can read them) |
-| Sends only to chats you allowed | ✓ | ✗ | ✗ |
-| Needs SIP disabled | yes | for Private API features | for its helper's features |
-| Latest release | new | 1.9.9, May 2025 | 0.15.x, September 2026 |
+| | imbridge | BlueBubbles Server | imsg | imcore-bridge |
+|---|---|---|---|---|
+| What you run | a Python library, CLI and MCP server | an Electron app with a REST/WebSocket server | a Swift CLI with a JSON-RPC mode | a Node/Bun library |
+| Send and receive text | ✓ | ✓ | ✓, even without disabling SIP | ✓ |
+| Inline replies | ✓ | ✓ | ✓ | ✓ |
+| Tapbacks you can send | classic, any emoji, stickers | classic | classic | classic, any emoji |
+| Edit and unsend | ✓ | ✓ | ✓ | ✓ |
+| Polls | create, vote, tally | ✗ | create, vote¹ | create, vote¹ |
+| Send Later | Messages' own, checked | the server's own scheduler | ✗ | Messages' own |
+| Stickers | send, stick on, tapback | ✗ | send, stick on | send |
+| Bold, italics, text effects | ✓ | ✗ | bold, italics | ✓ |
+| Send link previews | ✗ (coming) | ✗ | ✓ | ✗ |
+| MCP server | ✓ | ✗ | ✗ | ✗ |
+| Sends only to chats you allowed | ✓ | ✗ | ✗ | ✗ |
+| Needs SIP disabled | yes | for Private API features | for its helper's features | yes |
+| Latest release | 0.5.0, September 2026 | 1.9.9, May 2025 | 0.15.9, September 2026 | 0.2.3, September 2026 |
+
+¹ Each vote carries only the newly chosen option, so voting for a second option replaces the first. imbridge sends
+your whole current choice under the poll's own session, the way Messages does.
 
 If you only need plain text in and out and don't want to touch SIP, [imsg](https://github.com/openclaw/imsg) does
-that well. imbridge is for when your agent needs the whole conversation from Python: replies, reactions and effects.
+that well. imbridge is for when your agent needs the whole conversation from Python, and for keeping it to the people
+you chose.
 
 ## How it works
 
