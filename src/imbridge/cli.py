@@ -188,6 +188,13 @@ async def _start(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _focus(args: argparse.Namespace) -> int:
+    async with _bridge(args) as im:
+        silenced = await im.focus_status(args.person)
+    print({True: "notifications silenced", False: "notifications on", None: "not shared"}[silenced])
+    return 0
+
+
 async def _send(args: argparse.Namespace) -> int:
     async with _bridge(args) as im:
         text = getattr(args, "text", "")
@@ -281,6 +288,9 @@ def _parser() -> argparse.ArgumentParser:
     chats.add_argument("-n", type=int, default=20, help="how many (default 20)")
     chats.add_argument("--json", action="store_true", help="one JSON object per line")
 
+    focus = commands.add_parser("focus", parents=[mine], help="whether someone has notifications silenced")
+    focus.add_argument("person", help="phone number or email, or a one-to-one chat GUID")
+
     poll = commands.add_parser("poll", parents=[mine], help="show a poll's options, votes and question")
     poll.add_argument("message", metavar="GUID", help="the poll's message, or a vote in it")
     poll.add_argument("--json", action="store_true", help="as a JSON object")
@@ -317,6 +327,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(_send(args))
         if args.command == "watch":
             return asyncio.run(_watch(args))
+        if args.command == "focus":
+            return asyncio.run(_focus(args))
         if args.command == "mcp":
             return _mcp(args)
         im = _bridge(args, inject=False)

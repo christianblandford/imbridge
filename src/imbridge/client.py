@@ -28,7 +28,7 @@ from .addresses import (
     is_phone,
 )
 from .chatdb import APPLE_EPOCH, ChatDB, ChatInfo, Message
-from .guard import AnyChat, SendGuard
+from .guard import AnyChat, SendGuard, one_to_one_handle
 from .polls import PollResults
 from .protocol import HelperError, HelperNotConnected, HelperServer, HelperUnauthorized
 from .reactions import parse_target, reaction_label, reaction_type
@@ -237,6 +237,12 @@ class Chat:
     async def unvote(self, poll: Message | str, *options: str) -> str | None:
         """Take back your vote for options (or all of them) in one of this chat's polls."""
         return await self._bridge.unvote(poll, *options, chat=self.guid)
+
+    async def focus_status(self) -> bool | None:
+        """Whether the other person in this one-to-one chat has notifications silenced: see IMBridge.focus_status."""
+        if self.is_group:
+            raise ValueError("Focus status is per person; ask IMBridge.focus_status about someone in the group")
+        return await self._bridge.focus_status(self.guid)
 
     def poll(self, message: Message | str) -> PollResults | None:
         """The current state of a poll in this chat: see IMBridge.poll."""
@@ -692,6 +698,16 @@ class IMBridge:
             )
         self._guard.record_send(chat_guid)
         await self._request("unsend-message", {"chatGuid": chat_guid, "messageGuid": target.guid, "partIndex": part})
+
+    async def focus_status(self, person: str) -> bool | None:
+        """Whether someone has notifications silenced by a Focus, as Messages says under their name: True or False,
+        or None when they don't share their Focus status with you. person is a phone number or email, or a
+        one-to-one chat. Nothing is sent to them."""
+        handle = one_to_one_handle(person) if ";" in person else (contact_address(person) or person.strip())
+        if not handle:
+            raise ValueError(f"{person!r} isn't a person's phone number or email, or a one-to-one chat")
+        status = (await self._request("check-focus-status", {"address": handle})).get("status")
+        return {1: False, 2: True}.get(status)  # IMCore's availability: 0 unknown, 1 available, 2 silenced
 
     async def account(self) -> dict[str, Any]:
         """The signed-in account (apple_id, login_status_message, aliases, ...); also proves the helper answers."""

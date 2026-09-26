@@ -2,6 +2,9 @@
 
 ## 0.4.0 (unreleased)
 
+- Focus status: `im.focus_status(person)` (and `chat.focus_status()`, `imbridge focus`, the MCP tool `focus_status`)
+  says whether someone has notifications silenced, or `None` when they don't share it. The helper's lookup had been
+  failing on macOS 26.4 and later, where the method it called was renamed (helper/patches/0006-focus-status.patch).
 - Polls, read: a poll arrives as a message with `poll` (its options, creator and session) and each vote as one with
   `vote` (the voter's whole current choice). `im.poll(message)` and `chat.poll(message)` give a `PollResults`: current
   options including added choices, each voter's latest choice, `counts()`, `voters(option)`, and the question the

@@ -1,0 +1,60 @@
+imbridge Focus status: macOS 26.4+ renamed IMHandleAvailabilityManager's _fetchUpdatedStatusForHandle:completion: to
+fetchUpdatedStatusForHandle:completion:, so check-focus-status always answered "Selector not found". Use whichever
+exists; answer with an error instead of never answering when the handle or the class is missing; and include the raw
+availability status alongside silenced.
+
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+index 9e82b59..b16c586 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
++++ b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+@@ -751,26 +751,31 @@ -(void) handleServerEvent: (NSString*)event data: (NSDictionary*)data transactio
+         IMHandle *handle = [[[IMAccountController sharedInstance] activeIMessageAccount] imHandleWithID:(data[@"address"])];
+         // Use reference to class since it doesn't exist on Big Sur
+         Class cls = NSClassFromString(@"IMHandleAvailabilityManager");
+-        if (handle != nil && cls != nil) {
+-            if ([cls instancesRespondToSelector:NSSelectorFromString(@"_fetchUpdatedStatusForHandle:completion:")]) {
+-                [[cls sharedInstance] _fetchUpdatedStatusForHandle:(handle) completion:^() {
+-                    // delay for 1 second to ensure we have latest status
+-                    NSTimeInterval delayInSeconds = 1.0;
+-                    dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayInSeconds * NSEC_PER_SEC));
+-                    dispatch_after(popTime, dispatch_get_main_queue(), ^(void){
+-                        NSInteger status = [[cls sharedInstance] availabilityForHandle:(handle)];
+-                        DLog("BLUEBUBBLESHELPER: Found status %{public}ld for %{public}@", (long)status, data[@"address"]);
+-                        if (transaction != nil) {
+-                            BOOL silenced = status == 2;
+-                            [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"silenced": [NSNumber numberWithBool:silenced]}];
+-                        }
+-                    });
+-                }];
+-            } else {
+-                if (transaction != nil) {
+-                    [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": @"Selector not found!"}];
+-                }
++        // imbridge: macOS 26.4+ dropped the underscore from the fetch; and always answer, or the caller waits forever
++        SEL fetch = NSSelectorFromString(@"fetchUpdatedStatusForHandle:completion:");
++        if (cls != nil && ![cls instancesRespondToSelector:fetch]) {
++            fetch = NSSelectorFromString(@"_fetchUpdatedStatusForHandle:completion:");
++        }
++        if (handle == nil || cls == nil || ![cls instancesRespondToSelector:fetch]) {
++            if (transaction != nil) {
++                NSString *problem = handle == nil ? @"No such handle" : @"This macOS can't check Focus status";
++                [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"error": problem}];
+             }
++        } else {
++            void (^fetched)(void) = ^() {
++                // delay for 1 second to ensure we have latest status
++                NSTimeInterval delayInSeconds = 1.0;
++                dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayInSeconds * NSEC_PER_SEC));
++                dispatch_after(popTime, dispatch_get_main_queue(), ^(void){
++                    NSInteger status = [[cls sharedInstance] availabilityForHandle:(handle)];
++                    DLog("BLUEBUBBLESHELPER: Found status %{public}ld for %{public}@", (long)status, data[@"address"]);
++                    if (transaction != nil) {
++                        BOOL silenced = status == 2;
++                        [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction, @"silenced": [NSNumber numberWithBool:silenced], @"status": @(status)}];
++                    }
++                });
++            };
++            ((void (*)(id, SEL, id, id))objc_msgSend)([cls sharedInstance], fetch, handle, fetched);
+         }
+     } else if ([event isEqualToString:@"notify-anyways"]) {
+         IMChat *chat = [self getIMChatFromGuid:data[@"chatGuid"] transaction: transaction];

@@ -252,6 +252,15 @@ def build_server(im: IMBridge) -> MCPServer:
             raise _refusal(error) from error
 
     @server.tool(annotations=READS)
+    async def focus_status(person: str) -> dict[str, Any]:
+        """Whether someone has notifications silenced by a Focus (so a reply may take a while). `person` is a phone
+        number or email, or a one-to-one chat id. `silenced` is null when they don't share their Focus status."""
+        try:
+            return {"person": person, "silenced": await im.focus_status(person)}
+        except Exception as error:
+            raise _refusal(error) from error
+
+    @server.tool(annotations=READS)
     def whoami() -> dict[str, Any]:
         """Which of the user's addresses this server answers on, and the chats it may send to."""
         try:

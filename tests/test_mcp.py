@@ -39,7 +39,7 @@ def test_tools_are_described_and_annotated(chat_db):
     tools = {tool.name: tool for tool in asyncio.run(server_for(chat_db).list_tools())}
     assert set(tools) == {
         "list_chats", "read_messages", "check_messages", "read_poll", "send_message", "reply", "react",
-        "send_poll", "vote", "edit_message", "unsend_message", "show_typing", "whoami",
+        "send_poll", "vote", "edit_message", "unsend_message", "show_typing", "focus_status", "whoami",
     }
     assert all(tool.description for tool in tools.values())
     assert tools["read_messages"].annotations.read_only_hint

@@ -167,3 +167,15 @@ def test_edit_and_unsend_requests(chat_db):
     }
     assert unsend["action"] == "unsend-message"
     assert unsend["data"] == {"chatGuid": ALEX, "messageGuid": "M2", "partIndex": 0}
+
+
+def test_focus_status(chat_db):
+    for status, expected in [(2, True), (1, False), (0, None)]:
+        silenced, requests = run(chat_db, lambda im: im.focus_status("+1 555 123 4567"),
+                                 {"check-focus-status": {"status": status}})
+        assert silenced is expected
+        assert requests[0]["data"] == {"address": "+15551234567"}  # nothing needs allowing: it's only a lookup
+    _, requests = run(chat_db, lambda im: im.chat(ALEX).focus_status(), {"check-focus-status": {"status": 1}})
+    assert requests[0]["data"] == {"address": "+15551234567"}
+    with pytest.raises(ValueError, match="per person"):
+        run(chat_db, lambda im: im.chat(CREW).focus_status())

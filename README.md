@@ -212,6 +212,7 @@ async with IMBridge(allow=["+15551234567"]) as im:
     im.chats(20)                                          # recent chats, newest first; each has .can_send
     im.message(guid)                                      # one message, or None
     im.poll(guid)                                         # a poll's options, votes and question (from any of its messages)
+    await im.focus_status("+15551234567")                 # True if their Focus silences notifications; None if not shared
     async for message in im.all_messages():               # every chat: be deliberate about who you answer
         ...
 ```
@@ -316,6 +317,7 @@ imbridge react GUID 🔥 [--remove]
 imbridge chats [-n 20] [--json]
 imbridge history +15551234567 [-n 20] [--json]
 imbridge poll GUID [--json]                          # a poll's question, options and votes
+imbridge focus +15551234567                          # whether they have notifications silenced
 imbridge watch [--chat CHAT] [--json] [--from-me] [--events]   # stream new messages; --json: one object per line
 imbridge mcp [--address ADDRESS]                     # the MCP server, over stdio (pip install "imbridge[mcp]")
 imbridge <command> --address +15550002222           # start, the sends, history, watch and mcp take it
@@ -348,6 +350,7 @@ itself.
 | `read_messages` | a chat's latest messages |
 | `check_messages` | messages since the last check; `wait_seconds` waits for a reply |
 | `read_poll` | a poll's question, options and votes |
+| `focus_status` | whether someone has notifications silenced by a Focus |
 | `send_message` | a new message, optionally with a bubble or text effect; or a new conversation with someone the user allowed |
 | `reply` | an inline reply to a message |
 | `react` | a tapback with any emoji or a classic |
