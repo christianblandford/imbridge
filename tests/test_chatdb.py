@@ -4,7 +4,7 @@ import asyncio
 import sqlite3
 
 import pytest
-from helpers import ALEX, CREW
+from helpers import ALEX, CREW, at
 
 from imbridge import ChatNotFound, IMBridge, NewContact, SendNotAllowed, WrongChat
 from imbridge.chatdb import ChatDB, FullDiskAccessError
@@ -152,3 +152,31 @@ def test_sending_needs_an_allowed_chat(chat_db):
         asyncio.run(im.chat(ALEX).send("hi"))
     assert not im.chat(ALEX).can_send
     assert im.chat(CREW).can_send
+
+
+def test_broken_conversations(chat_db):
+    db = sqlite3.connect(chat_db)
+    db.execute("INSERT INTO chat (guid, chat_identifier, display_name, service_name, style)"
+               " VALUES ('any;-;e:me@example.com', 'e:me@example.com', '', 'iMessage', 45)")
+    db.commit()
+    db.close()
+    assert ChatDB(chat_db).broken_chats() == ["e:me@example.com"]  # the fixture's real chats aren't listed
+
+
+def test_a_phone_number_only_matches_that_phone_number(chat_db):
+    # a more recently active one-to-one chat whose identifier merely contains Alex's digits (an MMS bounce address)
+    db = sqlite3.connect(chat_db)
+    rowid = db.execute(
+        "INSERT INTO chat (guid, chat_identifier, display_name, service_name, style) VALUES (?, ?, '', 'SMS', 45)",
+        ("any;-;bounces+1792755-274f-5551234567=mms.att.net@sendgrid.net",
+         "bounces+1792755-274f-5551234567=mms.att.net@sendgrid.net"),
+    ).lastrowid
+    message = db.execute("INSERT INTO message (guid, text, handle_id, is_from_me, date, service)"
+                         " VALUES ('B1', 'bounce', 0, 0, ?, 'SMS')", (at(99),)).lastrowid
+    db.execute("INSERT INTO chat_message_join VALUES (?, ?, ?)", (rowid, message, at(99)))
+    db.commit()
+    db.close()
+    chats = ChatDB(chat_db)
+    for written in ["+15551234567", "(555) 123-4567", "15551234567"]:
+        assert chats.chat_for_handle(written) == ALEX
+    assert chats.chat_for_handle("+445551234567") is None  # same last 10 digits, another country

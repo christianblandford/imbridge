@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 (unreleased)
+
+- **Fix (safety):** a phone number no longer resolves to a conversation whose identifier merely contains its digits.
+  `send("+15551234567", ...)`, `allow=[...]` and `imbridge allow` matched any one-to-one chat whose identifier
+  ended with those 10 digits, including email addresses such as carrier MMS or bounce addresses
+  (`...-5551234567=mms.att.net@...`), and the allowlist and address checks then approved that chat. Phone numbers now
+  match only chats that are that phone number, every digit compared when both carry a country code.
+- `imbridge doctor` reports a broken conversation addressed to an internal form of your address (`e:you@...`), which
+  IMCore can create when it misfiles a message and then use as your note-to-self chat.
+
 ## 0.3.0 (2026-09-26)
 
 - Edits and unsends, read: `Message.edited_at`, `Message.edit_count` and `Message.unsent_at`, and `im.message(guid)`

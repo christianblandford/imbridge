@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from . import config
-from .addresses import address_key, contact_address
+from .addresses import contact_address, same_address
 
 ANY_LINE = "*"  # in the allowed-chats file: every chat
 
@@ -94,7 +94,7 @@ class SendGuard:
         self._allow = [allow] if isinstance(allow, str) else allow  # one chat given on its own
         self._resolve = resolve  # turns a phone number, email or group name from `allow` into its chat GUID
         self._resolved: set[str] | None = None
-        self._handles: set[str] = set()  # people allowed in code that you haven't messaged yet (address keys)
+        self._handles: set[str] = set()  # people allowed in code that you haven't messaged yet
         self.max_per_chat = max_per_chat
         self.max_total = max_total
         self.window = window
@@ -111,7 +111,7 @@ class SendGuard:
                 except LookupError:
                     if not isinstance(entry, NewContact):
                         raise
-                    self._handles.add(address_key(entry))
+                    self._handles.add(entry)
             self._resolved = resolved
         return self._resolved
 
@@ -132,14 +132,13 @@ class SendGuard:
         return ANY_LINE in listed or self._allows_person(handle, listed)
 
     def _allows_person(self, handle: str, listed: set[str]) -> bool:
-        key = address_key(handle)
         chats = listed | self.resolve_allowed()  # which also collects self._handles
-        people = set(self._handles)
+        people = list(self._handles)
         for entry in chats:
             person = one_to_one_handle(entry) if ";" in entry else entry  # never a group: its GUID isn't a person
-            if person and (person_key := address_key(person)):
-                people.add(person_key)
-        return key is not None and key in people
+            if person:
+                people.append(person)
+        return any(same_address(handle, person) for person in people)
 
     def check_allowed_handle(self, handle: str) -> None:
         if not self.allows_handle(handle):

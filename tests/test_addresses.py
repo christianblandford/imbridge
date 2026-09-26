@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 
 from imbridge import ANY_ADDRESS, AddressNotChosen, IMBridge, WrongAddress
-from imbridge.addresses import address_key, display_address, is_phone
+from imbridge.addresses import address_key, display_address, is_phone, same_address
 from imbridge.chatdb import APPLE_EPOCH
 
 PERSONAL, BOT = "+15550001111", "+15550002222"  # two iPhones on one Apple ID
@@ -163,3 +163,21 @@ def test_a_second_number_appearing_later_stops_the_stream(one_number):
             await asyncio.wait_for(pending, 5)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(("a", "b", "same"), [
+    ("+14805550100", "(480) 555-0100", True),
+    ("+14805550100", "14805550100", True),
+    ("+14805550100", "+444805550100", False),  # the same last 10 digits in another country
+    ("+14805550100", "bounces+1-4805550100=mms.att.net@sendgrid.net", False),  # digits inside an email
+    ("You@Example.com", "mailto:you@example.com", True),
+    ("urn:biz:4805550100", "+14805550100", False),
+    (None, "+14805550100", False),
+])
+def test_same_address(a, b, same):
+    assert same_address(a, b) is same
+
+
+def test_only_phone_numbers_have_phone_keys():
+    assert address_key("urn:biz:4805550100") is None
+    assert address_key("any;+;chat935842394823948234") is None

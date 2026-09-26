@@ -44,15 +44,39 @@ def display_address(address: str | None) -> str | None:
     return address.lower() if "@" in address else address
 
 
+_PHONE = re.compile(r"\+?[\d\s().-]{7,}")  # digits and the usual punctuation, nothing else
+
+
 def address_key(address: str | None) -> str | None:
-    """A form to compare addresses by: a lowercased email, or the last 10 digits of a phone number."""
+    """A form to compare addresses by: a lowercased email, or the last 10 digits of a phone number. Anything else
+    (a group's id, "urn:biz:...") has none, so its digits never pass for a phone number."""
     address = display_address(address)
     if address is None:
         return None
     if "@" in address:
         return address
+    if not _PHONE.fullmatch(address):
+        return None
     digits = re.sub(r"\D", "", address)
     return digits[-10:] if len(digits) >= 7 else None
+
+
+def same_address(a: str | None, b: str | None) -> bool:
+    """Whether two addresses are the same person's: equal emails (ignoring case), or the same phone number. Two
+    numbers that both carry a country code must match in every digit; one without is compared by its last 10."""
+    a, b = display_address(a), display_address(b)
+    if not a or not b:
+        return False
+    if "@" in a or "@" in b:
+        return a == b
+    if not _PHONE.fullmatch(a) or not _PHONE.fullmatch(b):
+        return False
+    da, db = re.sub(r"\D", "", a), re.sub(r"\D", "", b)
+    if len(da) < 7 or len(db) < 7:
+        return False
+    if len(da) > 10 and len(db) > 10:
+        return da == db
+    return da[-10:] == db[-10:]
 
 
 def is_phone(address: str | None) -> bool:
