@@ -8,17 +8,28 @@ way for a bug to message your contacts.
 import asyncio
 from imbridge import IMBridge
 
-ALEX = "+15551234567"  # the one conversation this bot works in
+ALEX = "+15551234567"  # the one conversation this agent works in
+
+async def answer(text: str) -> str:
+    ...  # call your model or agent here
 
 async def main():
     async with IMBridge(allow=[ALEX]) as im:  # imbridge sends nowhere else
         chat = im.chat(ALEX)
-        async for message in chat.messages():  # only this chat's new messages, tapbacks and replies
+        async for message in chat.messages():  # this chat's new texts, tapbacks and inline replies
             if message.text and not message.reaction:
-                await chat.react(message, "👀")  # any emoji, not just the classic six
-                await chat.reply(message, "on it")  # an inline (threaded) reply
+                await chat.react(message, "👀")  # "seen it, on it", with any emoji
+                await chat.reply(message, await answer(message.text))  # threaded under their message
 
 asyncio.run(main())
+```
+
+Or skip the code and give Claude, Cursor or any other MCP client the tools directly:
+
+```bash
+pip install "imbridge[mcp]"
+imbridge allow +15551234567               # the chats it may use; asks you to confirm
+claude mcp add imessage -- imbridge mcp   # then: "text Alex that I'm running late"
 ```
 
 ## Why imbridge
@@ -238,7 +249,8 @@ imbridge react GUID 🔥 [--remove]
 imbridge chats [-n 20] [--json]
 imbridge history +15551234567 [-n 20] [--json]
 imbridge watch [--chat CHAT] [--json] [--from-me]    # stream new messages; --json prints one object per line
-imbridge <command> --address +15550002222           # start, send, reply, react, history and watch take --address
+imbridge mcp [--address ADDRESS]                     # the MCP server, over stdio (pip install "imbridge[mcp]")
+imbridge <command> --address +15550002222           # start, send, reply, react, history, watch and mcp take it
 ```
 
 `send`, `reply` and `react` print the new message's GUID. They follow the same allowlist and rate limits as the
@@ -248,10 +260,58 @@ library.
 
 - **As a library**, inside your agent's loop, like the example at the top.
   [examples/ping_bot.py](https://github.com/christianblandford/imbridge/blob/main/examples/ping_bot.py) is a runnable
-  bot for one chat.
+  bot for one chat. For request/response code, `im.new_messages(since=rowid, wait=30)` returns what arrived since a
+  point, waiting up to `wait` seconds.
+- **As an MCP server** for Claude Code, Claude Desktop, Cursor and any other MCP client (below).
 - **From the shell**, for any agent that can run commands: it reads new messages from
-  `imbridge watch --chat CHAT --json` and answers with `imbridge reply GUID "..."` or `imbridge react GUID 👍`. Allow
-  the chats it may use beforehand; it can't allow more on its own.
+  `imbridge watch --chat CHAT --json` and answers with `imbridge reply GUID "..."` or `imbridge react GUID 👍`.
+
+Whichever way, allow the chats it may use beforehand (`imbridge allow`, in your own terminal). An agent can't allow
+more on its own, and in a chat with yourself it won't see the received copies of what it just sent, so it never answers
+itself.
+
+### MCP server
+
+`pip install "imbridge[mcp]"` adds `imbridge mcp`, which serves these tools over stdio:
+
+| tool | |
+|---|---|
+| `list_chats` | recent chats, and whether the agent may send in each (`can_send`) |
+| `read_messages` | a chat's latest messages |
+| `check_messages` | messages since the last check; `wait_seconds` waits for a reply |
+| `send_message` | a new message, optionally with an effect |
+| `reply` | an inline reply to a message |
+| `react` | a tapback with any emoji or a classic |
+| `show_typing` | the typing indicator |
+| `whoami` | the address it answers on and the chats it may send to |
+
+Sending goes through the same allowlist, address rules and rate limits as the library. A refused send tells the model
+the user has to allow the chat, rather than leaving it to hunt for a workaround.
+
+**Claude Code:**
+
+```bash
+claude mcp add --scope user imessage -- imbridge mcp                         # --scope user: every project
+claude mcp add --scope user imessage -- imbridge mcp --address +15550002222  # when your Apple ID has several numbers
+```
+
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`) and **Cursor**
+(`~/.cursor/mcp.json`) take the same entry. Apps started from the Dock don't get your shell's `PATH`, so use the full
+path that `which imbridge` prints, then quit and reopen the app:
+
+```json
+{
+  "mcpServers": {
+    "imessage": {
+      "command": "/full/path/to/imbridge",
+      "args": ["mcp", "--address", "+15550002222"]
+    }
+  }
+}
+```
+
+The app that starts the server (Claude Desktop, Cursor, or the terminal Claude Code runs in) needs Full Disk Access to
+read `chat.db`.
 
 ## Limitations
 

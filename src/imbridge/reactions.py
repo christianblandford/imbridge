@@ -38,6 +38,12 @@ def reaction_type(reaction: str, remove: bool = False) -> str:
     return f"-{base}" if remove else base
 
 
+def reaction_label(reaction: str) -> str:
+    """How a reaction reads back from chat.db (Reaction.label): a classic tapback's name, or the emoji itself."""
+    reaction = reaction.strip()
+    return reaction.lower() if reaction.lower() in _CODES else reaction
+
+
 def parse_target(associated_guid: str) -> tuple[str, int]:
     """'p:1/GUID' -> ('GUID', 1); 'bp:GUID' -> ('GUID', 0); a bare GUID -> (GUID, 0)."""
     if associated_guid.startswith("p:"):

@@ -1,4 +1,4 @@
-"""The imbridge command: doctor, start, allow, send, reply, react, chats, history, watch."""
+"""The imbridge command: doctor, start, allow, send, reply, react, chats, history, watch, mcp."""
 
 from __future__ import annotations
 
@@ -42,6 +42,18 @@ def _label(chat: Chat) -> str:
 def _bridge(args: argparse.Namespace, *, inject: bool = True) -> IMBridge:
     address = getattr(args, "address", None)
     return IMBridge(address=ANY_ADDRESS if address and address.lower() == "any" else address, inject=inject)
+
+
+def _mcp(args: argparse.Namespace) -> int:
+    try:
+        from .mcp_server import serve
+    except ModuleNotFoundError as e:
+        if (e.name or "").split(".")[0] != "mcp":
+            raise
+        print("imbridge: the MCP server needs the mcp package: pip install 'imbridge[mcp]'", file=sys.stderr)
+        return 1
+    serve(_bridge(args))
+    return 0
 
 
 def _print_message(message: Message, as_json: bool) -> None:
@@ -203,6 +215,8 @@ def _parser() -> argparse.ArgumentParser:
     watch.add_argument("--chat", help="only this chat")
     watch.add_argument("--json", action="store_true", help="one JSON object per line")
     watch.add_argument("--from-me", action="store_true", help="include messages you send")
+
+    commands.add_parser("mcp", parents=[mine], help="run the MCP server (stdio) for Claude, Cursor and other clients")
     return parser
 
 
@@ -223,6 +237,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(_send(args))
         if args.command == "watch":
             return asyncio.run(_watch(args))
+        if args.command == "mcp":
+            return _mcp(args)
         im = _bridge(args, inject=False)
         if args.command == "chats":
             for chat in im.chats(args.n):

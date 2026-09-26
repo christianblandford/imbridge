@@ -1,0 +1,196 @@
+"""imbridge's MCP server: iMessage tools for Claude, Cursor and any other MCP client.
+
+    imbridge mcp [--address +15550002222]
+
+It sends only to chats the user allowed with `imbridge allow` (which needs a person at a terminal, so an agent can't
+add chats), under the same address rules and rate limits as the library. Reading tools only touch chat.db; the first
+send loads the helper into Messages.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
+
+from . import __version__
+from .addresses import AddressNotChosen, WrongAddress
+from .chatdb import FullDiskAccessError, Message
+from .client import EFFECTS, Chat, IMBridge
+from .guard import RateLimited, SendNotAllowed
+from .protocol import HelperError
+from .reactions import CLASSIC_TAPBACKS
+
+INSTRUCTIONS = """\
+These tools read and send iMessages on the user's Mac, through Messages.app.
+
+- check_messages returns new messages since your last check; pass wait_seconds to wait for a reply.
+- A tapback (react) is a light acknowledgement: react to a message when you start on it, then answer with reply,
+  which threads your answer under that message. Any emoji works as a tapback.
+- You can only send in chats the user has allowed; list_chats shows which (can_send). Only the user can allow a chat,
+  from their own terminal. If a send is refused, tell the user why instead of looking for another way to send.
+- Messages go to real people and can't be taken back, so be sure before you send.
+"""
+
+READS = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+SENDS = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True)
+MAX_WAIT = 55  # seconds; many MCP clients give up on a tool call after a minute
+
+
+def _message(message: Message) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "guid": message.guid,
+        "chat": message.chat_guid,
+        "from": "me" if message.is_from_me else message.sender,
+        "text": message.text,
+        "date": message.date.astimezone().isoformat() if message.date else None,
+    }
+    if message.chat_name:
+        item["chat_name"] = message.chat_name
+    if message.reply_to:
+        item["reply_to"] = message.reply_to
+    if reaction := message.reaction:
+        item["tapback"] = {"reaction": reaction.label, "removed": reaction.removed, "on": reaction.target_guid}
+    if message.attachments:
+        item["attachments"] = [{"name": a.name, "type": a.mime_type, "path": a.path} for a in message.attachments]
+    return item
+
+
+def _chat(chat: Chat) -> dict[str, Any]:
+    return {
+        "chat": chat.guid,
+        "name": chat.name,
+        "participants": list(chat.participants),
+        "is_group": chat.is_group,
+        "last_message_at": chat.last_message_at.astimezone().isoformat() if chat.last_message_at else None,
+        "can_send": chat.can_send,
+    }
+
+
+def _refusal(error: Exception) -> ToolError:
+    """imbridge's errors, worded for a model: what happened, and what it should (not) do about it."""
+    if isinstance(error, SendNotAllowed):
+        advice = "Only the user can allow a chat, by running `imbridge allow <chat>` in their own terminal. Ask them."
+    elif isinstance(error, RateLimited):
+        advice = "Wait a minute before sending more."
+    elif isinstance(error, (AddressNotChosen, WrongAddress)):
+        advice = "The user has to set which of their numbers this server uses (--address). Tell them."
+    elif isinstance(error, FullDiskAccessError):
+        advice = "The app running this MCP server needs Full Disk Access. Tell the user."
+    elif isinstance(error, HelperError):
+        advice = "Messages' helper isn't answering; the user can run `imbridge doctor`."
+    else:
+        advice = ""
+    return ToolError(f"{error} {advice}".strip())
+
+
+def build_server(im: IMBridge) -> MCPServer:
+    server = MCPServer("imbridge", instructions=INSTRUCTIONS, version=__version__)
+    cursors: dict[str | None, int] = {}  # per chat (None: every chat), the chat.db ROWID checked up to
+    started: list[int] = []  # the ROWID when this server started: where every first check begins
+
+    def start_rowid() -> int:
+        if not started:
+            started.append(im.db.max_rowid())
+        return started[0]
+
+    try:
+        start_rowid()
+    except FullDiskAccessError:
+        pass  # check_messages reports it when called
+
+    @server.tool(annotations=READS)
+    def list_chats(limit: int = 20) -> list[dict[str, Any]]:
+        """Recent iMessage chats, newest first. `chat` identifies each one; `can_send` says if you may send there."""
+        try:
+            return [_chat(chat) for chat in im.chats(max(1, min(limit, 100)))]
+        except Exception as error:
+            raise _refusal(error) from error
+
+    @server.tool(annotations=READS)
+    def read_messages(chat: str, limit: int = 20) -> list[dict[str, Any]]:
+        """A chat's latest messages, oldest first. `chat` is a chat id from list_chats, a phone number or email of an
+        existing conversation, or a group's name."""
+        try:
+            return [_message(message) for message in im.history(chat, max(1, min(limit, 200)))]
+        except Exception as error:
+            raise _refusal(error) from error
+
+    @server.tool(annotations=READS)
+    async def check_messages(chat: str | None = None, wait_seconds: int = 0) -> list[dict[str, Any]]:
+        """New incoming messages since your last check (texts, inline replies and tapbacks), oldest first.
+
+        Pass `chat` to check one conversation, or leave it out for all. With wait_seconds (up to 55), waits for the
+        next message instead of returning an empty list: use it to wait for a reply. The first check returns what
+        arrived since this server started.
+        """
+        try:
+            key = im.resolve_chat(chat) if chat else None
+            if key not in cursors:
+                cursors[key] = await asyncio.to_thread(start_rowid)
+            found, cursors[key] = await im.new_messages(
+                since=cursors[key], chat=key, wait=max(0, min(wait_seconds, MAX_WAIT))
+            )
+            return [_message(message) for message in found]
+        except Exception as error:
+            raise _refusal(error) from error
+
+    @server.tool(
+        annotations=SENDS,
+        description="Send a new message to an allowed chat. Returns its guid. `effect` is an optional bubble or "
+        f"screen effect: {', '.join(EFFECTS)}.",
+    )
+    async def send_message(chat: str, text: str, effect: str | None = None) -> dict[str, Any]:
+        try:
+            return {"guid": await im.send(chat, text, effect=effect)}
+        except Exception as error:
+            raise _refusal(error) from error
+
+    @server.tool(annotations=SENDS)
+    async def reply(message_guid: str, text: str) -> dict[str, Any]:
+        """Reply inline to a message (threaded under it, like swiping to reply). Returns the reply's guid."""
+        try:
+            return {"guid": await im.reply(message_guid, text)}
+        except Exception as error:
+            raise _refusal(error) from error
+
+    @server.tool(
+        annotations=SENDS,
+        description=f"Tapback a message with any single emoji, or a classic: {', '.join(CLASSIC_TAPBACKS)}. "
+        "A new tapback replaces your previous one on that message; remove=true takes it away.",
+    )
+    async def react(message_guid: str, reaction: str, remove: bool = False) -> dict[str, Any]:
+        try:
+            return {"guid": await im.react(message_guid, reaction, remove=remove)}
+        except Exception as error:
+            raise _refusal(error) from error
+
+    @server.tool(annotations=SENDS)
+    async def show_typing(chat: str, typing: bool = True) -> dict[str, Any]:
+        """Show (or hide) the typing indicator in an allowed chat, e.g. while you work on a longer answer."""
+        try:
+            await im.typing(chat, typing)
+            return {"typing": typing}
+        except Exception as error:
+            raise _refusal(error) from error
+
+    @server.tool(annotations=READS)
+    def whoami() -> dict[str, Any]:
+        """Which of the user's addresses this server answers on, and the chats it may send to."""
+        try:
+            allowed = [_chat(chat) for chat in im.chats(200) if chat.can_send]
+            address = im.address if isinstance(im.address, str) else ("any" if im.address else None)
+            return {"address": address, "allowed_chats": allowed}
+        except Exception as error:
+            raise _refusal(error) from error
+
+    return server
+
+
+def serve(im: IMBridge) -> None:
+    """Run the MCP server over stdio until the client disconnects."""
+    build_server(im).run("stdio")
+

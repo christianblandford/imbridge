@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0 (2026-09-26)
+
+- An MCP server: `imbridge mcp` (install `imbridge[mcp]`) gives Claude Code, Claude Desktop, Cursor and other MCP
+  clients `list_chats`, `read_messages`, `check_messages` (with `wait_seconds` to wait for a reply), `send_message`,
+  `reply`, `react`, `show_typing` and `whoami`. Sends go through the same allowlist, address rules and rate limits,
+  and refusals are worded so a model asks the user instead of working around them. Its first send loads the helper
+  into Messages, only after the checks pass.
+- `IMBridge.new_messages(since=..., wait=...)`: what arrived after a chat.db ROWID, waiting up to `wait` seconds, for
+  request/response code.
+- In a chat with yourself, the received copies of what imbridge just sent are dropped from streams, so an agent never
+  answers itself.
+- With `address=` set, `chats()` lists only the chats on that address.
+- Concurrent sends can't relaunch Messages twice, and nothing imbridge runs prints to stdout.
+
 ## 0.1.0 (2026-09-26)
 
 First release.

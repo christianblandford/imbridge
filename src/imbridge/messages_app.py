@@ -34,9 +34,9 @@ def quit_messages(timeout: float = 10.0) -> None:
     subprocess.run(["osascript", "-e", 'tell application "Messages" to quit'], capture_output=True)
     if _wait(lambda: messages_pid() is None, timeout):
         return
-    subprocess.run(["pkill", "-x", "Messages"])
+    subprocess.run(["pkill", "-x", "Messages"], capture_output=True)
     if not _wait(lambda: messages_pid() is None, 3):
-        subprocess.run(["pkill", "-KILL", "-x", "Messages"])
+        subprocess.run(["pkill", "-KILL", "-x", "Messages"], capture_output=True)
         _wait(lambda: messages_pid() is None, 3)
 
 
@@ -50,7 +50,7 @@ def launch_with_helper(
         args += ["--env", f"{key}={value}"]
     if hidden:
         args.insert(1, "-j")
-    subprocess.run(args, check=True)
+    subprocess.run(args, check=True, capture_output=True)  # never print: stdout may be an MCP stream
     if not _wait(lambda: messages_pid() is not None, timeout):
         raise RuntimeError("Messages did not start")
     return messages_pid()

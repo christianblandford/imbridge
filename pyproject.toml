@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "imbridge"
-version = "0.1.0"
+version = "0.2.0"
 description = "iMessage for Python and AI agents on macOS: send, reply inline, tapback with any emoji, and receive. No server, no Electron."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
 authors = [{ name = "Christian Blandford" }]
-keywords = ["imessage", "messages", "macos", "ai-agents", "tapback", "chatbot", "bluebubbles"]
+keywords = ["imessage", "messages", "macos", "ai-agents", "mcp", "model-context-protocol", "tapback", "chatbot"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: MacOS X",
@@ -24,7 +24,8 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+mcp = ["mcp>=2.2,<3"]
+dev = ["pytest>=8", "ruff>=0.6", "mcp>=2.2,<3"]
 
 [project.scripts]
 imbridge = "imbridge.cli:main"

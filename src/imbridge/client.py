@@ -6,7 +6,9 @@ import asyncio
 import logging
 import os
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Iterable
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,12 +18,20 @@ from .addresses import ANY_ADDRESS, AddressNotChosen, AnyAddress, WrongAddress, 
 from .chatdb import ChatDB, ChatInfo, Message
 from .guard import AnyChat, SendGuard
 from .protocol import HelperNotConnected, HelperServer, HelperUnauthorized
-from .reactions import parse_target, reaction_type
+from .reactions import parse_target, reaction_label, reaction_type
 
 log = logging.getLogger(__name__)
 
 # Messages writes the row linking a message to its chat a moment after the message itself.
 CHAT_LINK_GRACE = 2.0
+# In a chat with yourself, what you send comes back as a received copy within seconds; copies are matched this long.
+ECHO_WINDOW = 60.0
+
+
+@dataclass
+class _Cursor:
+    last: int  # the chat.db ROWID read up to
+    first_seen: dict[int, float] = field(default_factory=dict)  # rows still waiting for their chat link
 
 # Friendly names for Messages' send effects (bubble effects first, then screen effects).
 EFFECTS = {
@@ -195,6 +205,10 @@ class IMBridge:
         self._server = HelperServer(port or config.helper_port(), token or config.helper_token())
         # The chat of each message we sent, so replies and tapbacks work before chat.db catches up.
         self._chat_of: dict[str, str] = {}
+        self._helper_lock = asyncio.Lock()  # so concurrent sends don't each relaunch Messages
+        # What we sent recently, as (time, chat, fingerprint), to recognize the copies a chat with yourself echoes back.
+        self._recent: deque[tuple[float, str, str]] = deque(maxlen=200)
+        self._mine: set[str] = set()  # address keys of your own addresses
 
     async def __aenter__(self) -> IMBridge:
         await self.start()
@@ -225,8 +239,11 @@ class IMBridge:
         return Chat(self, self.db.chat(guid) or ChatInfo(guid, None, None, None, False, (), None))
 
     def chats(self, limit: int = 50) -> list[Chat]:
-        """Chats, most recently active first."""
-        return [Chat(self, info) for info in self.db.chats(limit)]
+        """Chats, most recently active first; with an address set, only the chats on it."""
+        if self._address_key is None:
+            return [Chat(self, info) for info in self.db.chats(limit)]
+        on_address = [info for info in self.db.chats(limit * 5) if address_key(info.address) == self._address_key]
+        return [Chat(self, info) for info in on_address[:limit]]
 
     def resolve_chat(self, chat: str) -> str:
         """The chat GUID for a chat GUID, a phone number or email (its one-to-one chat), or a group's name."""
@@ -275,6 +292,7 @@ class IMBridge:
             },
         )
         sent = result.get("identifier")
+        self._recent.append((time.monotonic(), chat_guid, f"text:{text.strip()}"))
         if sent:
             if len(self._chat_of) >= 1000:
                 self._chat_of.clear()
@@ -323,6 +341,25 @@ class IMBridge:
         async for message in self._stream(since, include_from_me, None):
             yield message
 
+    async def new_messages(
+        self, *, since: int, chat: str | None = None, wait: float = 0, include_from_me: bool = False
+    ) -> tuple[list[Message], int]:
+        """Messages after chat.db ROWID `since` (one chat, or every chat), waiting up to `wait` seconds for the first.
+
+        Returns the messages and the ROWID to pass as `since` next time: a polling alternative to the streams, for
+        request/response code such as tool calls. Start from `im.db.max_rowid()`.
+        """
+        await asyncio.to_thread(self._check_address)
+        chat_guid = self.resolve_chat(chat) if chat else None
+        cursor = _Cursor(since)
+        deadline = time.monotonic() + max(wait, 0)
+        while True:
+            found, idle = await self._poll(cursor, include_from_me, chat_guid)
+            if found or time.monotonic() >= deadline:
+                return found, cursor.last
+            if idle:
+                await asyncio.sleep(min(self.poll_interval, max(deadline - time.monotonic(), 0)))
+
     def history(self, chat: str, limit: int = 50) -> list[Message]:
         """A chat's latest messages to this program's address, oldest first."""
         self._check_address()
@@ -336,15 +373,34 @@ class IMBridge:
     # --- which of your addresses this program is -----------------------------------------------------------------
 
     def _check_address(self) -> None:
-        # With no address set, refuse while messages arrive at several of your phone numbers; otherwise remember
-        # the one in use, so a second one appearing later stops things too (see _admits).
-        if self._address_checked or self.address is not None:
+        # Learn your own addresses. With no address set, refuse while messages arrive at several of your phone
+        # numbers; otherwise remember the one in use, so a second one appearing later stops things too (see _admits).
+        if self._address_checked:
             return
-        phones = [address for address in self.db.my_addresses() if is_phone(address)]
-        if len(phones) > 1:
-            raise AddressNotChosen(_choose_address(phones, "Messages here arrives at several of your phone numbers"))
-        self._pinned_phone = address_key(phones[0]) if phones else None
+        mine = self.db.my_addresses()
+        self._mine = {key for key in map(address_key, mine) if key}
+        if self.address is None:
+            phones = [address for address in mine if is_phone(address)]
+            if len(phones) > 1:
+                what = "Messages here arrives at several of your phone numbers"
+                raise AddressNotChosen(_choose_address(phones, what))
+            self._pinned_phone = address_key(phones[0]) if phones else None
         self._address_checked = True
+
+    def _is_echo(self, message: Message) -> bool:
+        """A received copy of something this program just sent: in a chat with yourself, everything comes back."""
+        if address_key(message.sender) not in self._mine:
+            return False  # only your own addresses echo, so a real person's identical "ok" is never dropped
+        if message.reaction:
+            reaction = message.reaction
+            fingerprint = f"reaction:{reaction.target_guid}:{reaction.label}:{reaction.removed}"
+        else:
+            fingerprint = f"text:{(message.text or '').strip()}"
+        now = time.monotonic()
+        return any(
+            chat == message.chat_guid and seen == fingerprint and now - at < ECHO_WINDOW
+            for at, chat, seen in self._recent
+        )
 
     def _admits(self, message: Message, *, strict: bool) -> bool:
         """Whether this program should see a message, given which of your addresses it is."""
@@ -390,29 +446,38 @@ class IMBridge:
 
     async def _stream(self, since: int | None, include_from_me: bool, chat_guid: str | None) -> AsyncIterator[Message]:
         await asyncio.to_thread(self._check_address)
-        last = since if since is not None else await asyncio.to_thread(self.db.max_rowid)
-        first_seen: dict[int, float] = {}
+        cursor = _Cursor(since if since is not None else await asyncio.to_thread(self.db.max_rowid))
         while True:
-            batch = await asyncio.to_thread(self.db.messages_after, last)
-            waiting = False
-            for message in batch:
-                if message.rowid <= last:  # a message linked to two chats appears twice
-                    continue
-                if message.chat_guid is None:
-                    seen = first_seen.setdefault(message.rowid, time.monotonic())
-                    if time.monotonic() - seen < CHAT_LINK_GRACE:
-                        waiting = True  # read it again once its chat link lands
-                        break
-                first_seen.pop(message.rowid, None)
-                last = message.rowid
-                if chat_guid is not None and message.chat_guid != chat_guid:
-                    continue
-                if not self._admits(message, strict=True):
-                    continue
-                if include_from_me or not message.is_from_me:
-                    yield message
-            if waiting or not batch:
+            found, idle = await self._poll(cursor, include_from_me, chat_guid)
+            for message in found:
+                yield message
+            if idle:
                 await asyncio.sleep(self.poll_interval)
+
+    async def _poll(
+        self, cursor: _Cursor, include_from_me: bool, chat_guid: str | None
+    ) -> tuple[list[Message], bool]:
+        """One read past the cursor: the messages this program should see, and whether to wait before reading again."""
+        batch = await asyncio.to_thread(self.db.messages_after, cursor.last)
+        found: list[Message] = []
+        for message in batch:
+            if message.rowid <= cursor.last:  # a message linked to two chats appears twice
+                continue
+            if message.chat_guid is None:
+                seen = cursor.first_seen.setdefault(message.rowid, time.monotonic())
+                if time.monotonic() - seen < CHAT_LINK_GRACE:
+                    return found, True  # read it again once its chat link lands
+            cursor.first_seen.pop(message.rowid, None)
+            cursor.last = message.rowid
+            if chat_guid is not None and message.chat_guid != chat_guid:
+                continue
+            if not self._admits(message, strict=True):
+                continue
+            if not message.is_from_me and self._is_echo(message):
+                continue
+            if include_from_me or not message.is_from_me:
+                found.append(message)
+        return found, not batch
 
     async def _react(self, chat_guid: str, guid: str, part: int, reaction: str, remove: bool) -> str:
         kind = reaction_type(reaction, remove)
@@ -422,6 +487,7 @@ class IMBridge:
             "send-reaction",
             {"chatGuid": chat_guid, "selectedMessageGuid": guid, "reactionType": kind, "partIndex": part},
         )
+        self._recent.append((time.monotonic(), chat_guid, f"reaction:{guid}:{reaction_label(reaction)}:{remove}"))
         return result.get("identifier")
 
     async def _target(self, message: Message | str, chat: str | None) -> tuple[str, str, int]:
@@ -464,19 +530,20 @@ class IMBridge:
         return await self._server.request(action, data)
 
     async def _ensure_helper(self, timeout: float = 45.0) -> None:
-        if not self._server.listening:
-            await self._server.start()
-        if self._server.connected:
-            return
-        try:
-            await self._server.wait_connected(timeout=3)  # an injected helper redials every second
-            return
-        except (TimeoutError, asyncio.TimeoutError):  # the same class from Python 3.11 on
-            if not self.inject:
-                raise HelperNotConnected(
-                    "no helper answered; run `imbridge start` (or use inject=True) to load it into Messages"
-                ) from None
-        await self._relaunch(timeout)
+        async with self._helper_lock:
+            if not self._server.listening:
+                await self._server.start()
+            if self._server.connected:
+                return
+            try:
+                await self._server.wait_connected(timeout=3)  # an injected helper redials every second
+                return
+            except (TimeoutError, asyncio.TimeoutError):  # the same class from Python 3.11 on
+                if not self.inject:
+                    raise HelperNotConnected(
+                        "no helper answered; run `imbridge start` (or use inject=True) to load it into Messages"
+                    ) from None
+            await self._relaunch(timeout)
 
     async def _relaunch(self, timeout: float = 45.0) -> None:
         log.info("launching Messages with the helper")
