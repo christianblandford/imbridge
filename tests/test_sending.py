@@ -224,3 +224,19 @@ def test_stickers_are_checked_before_anything_is_sent(chat_db, tmp_path):
     with pytest.raises(SendNotAllowed):
         run(chat_db, lambda im: im.send_sticker(ALEX, image), None, log)
     assert log == []
+
+
+def test_tapbacking_with_a_sticker(chat_db, tmp_path):
+    image = tmp_path / "dot.png"
+    image.write_bytes(b"\x89PNG")
+    guid, (request,) = run(chat_db, lambda im: im.chat(ALEX).react_with_sticker("M1", image), allow=[ALEX])
+    data = request["data"]
+    assert request["action"] == "send-sticker-tapback" and request["file_existed"]
+    assert (data["chatGuid"], data["selectedMessageGuid"], data["partIndex"]) == (ALEX, "M1", 0)
+    assert re.fullmatch(r"[0-9a-f]{16}", data["stickerHash"])
+    log = []
+    with pytest.raises(WrongChat):  # a chat only tapbacks its own messages
+        run(chat_db, lambda im: im.chat(CREW).react_with_sticker("M1", image), None, log, allow=[CREW])
+    with pytest.raises(SendNotAllowed):
+        run(chat_db, lambda im: im.react_with_sticker("M1", image), None, log)
+    assert log == []

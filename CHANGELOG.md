@@ -5,6 +5,8 @@
 - Stickers, sent: `chat.send_sticker(path, on=None, label=None)` (and `imbridge send-sticker`) sends an image as a
   sticker, marked the way Messages marks the stickers you make, on its own or stuck onto one of the chat's messages
   (helper/patches/0009-stickers.patch).
+- Sticker tapbacks, sent: `chat.react_with_sticker(message, path)` (and `imbridge react-sticker`) tapbacks a message
+  with a sticker, sent by IMCore's own IMTapbackSender as an IMStickerTapback (helper/patches/0010-sticker-tapbacks.patch).
 - Stickers, read: `Attachment.is_sticker` marks sticker images (sent on their own, stuck onto a message, or used as a
   tapback), and a sticker used as a tapback (associated types 2007/3007) is a `Reaction` of kind `sticker_tapback`
   instead of `unknown`. A sticker stuck onto a bubble stays kind `sticker`.

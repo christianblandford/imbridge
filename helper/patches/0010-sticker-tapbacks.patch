@@ -1,0 +1,122 @@
+imbridge sticker tapbacks: send-sticker-tapback {chatGuid, filePath, stickerId, stickerHash, selectedMessageGuid,
+partIndex?} tapbacks a message part with a sticker (associated type 2007): the image goes up as a transfer marked as a
+sticker, with the sticker info Messages' tapback menu gives its stickers, and IMTapbackSender sends it as an
+IMStickerTapback on the part's chat item, the way Messages' own tapbacks go out. Also factors the lookup of a message's
+part chat item (IMBMessagePart) out of send-sticker.
+
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+index 81431e3..a7ab088 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
++++ b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+@@ -278,6 +278,20 @@ static void IMBDispatch(IMChat *chat, IMMessage *message) {
+     return transfer;
+ }
+ 
++// The chat item for one part of a message (what stickers and tapbacks attach to), or nil.
++static IMMessagePartChatItem *IMBMessagePart(IMMessage *message, NSInteger part) {
++    IMMessageItem *messageItem = (IMMessageItem *)message._imMessageItem;
++    NSObject *items = messageItem._newChatItems;
++    NSArray *parts = [items isKindOfClass:[NSArray class]] ? (NSArray *)items : (items ? @[items] : @[]);
++    for (id candidate in parts) {
++        if ([candidate respondsToSelector:@selector(index)] && [candidate respondsToSelector:@selector(messagePartRange)]
++                && [(IMMessagePartChatItem *)candidate index] == part) {
++            return (IMMessagePartChatItem *)candidate;
++        }
++    }
++    return nil;
++}
++
+ static void IMBSendSticker(IMChat *chat, NSDictionary *data, NSString *transaction) {
+     id path = data[@"filePath"], sid = data[@"stickerId"], shash = data[@"stickerHash"], label = data[@"label"];
+     id target = data[@"selectedMessageGuid"];
+@@ -324,19 +338,8 @@ static void IMBSendSticker(IMChat *chat, NSDictionary *data, NSString *transacti
+         }
+         [[IMChatHistoryController sharedInstance] loadMessageWithGUID:target completionBlock:^(IMMessage *message) {
+             @try {
+-                IMMessageItem *messageItem = (IMMessageItem *)message._imMessageItem;
+-                NSObject *items = messageItem._newChatItems;
+-                NSArray *parts = [items isKindOfClass:[NSArray class]] ? (NSArray *)items : (items ? @[items] : @[]);
+-                IMMessagePartChatItem *item = nil;
+-                for (id candidate in parts) {
+-                    if ([candidate respondsToSelector:@selector(index)]
+-                            && [candidate respondsToSelector:@selector(messagePartRange)]
+-                            && [(IMMessagePartChatItem *)candidate index] == part) {
+-                        item = (IMMessagePartChatItem *)candidate;
+-                        break;
+-                    }
+-                }
+-                if (message == nil || item == nil) {
++                IMMessagePartChatItem *item = message ? IMBMessagePart(message, part) : nil;
++                if (item == nil) {
+                     IMBReply(transaction, @{@"error": @"Couldn't find that message to stick the sticker on"});
+                     return;
+                 }
+@@ -358,6 +361,55 @@ static void IMBSendSticker(IMChat *chat, NSDictionary *data, NSString *transacti
+     }
+ }
+ 
++// imbridge: sticker tapbacks (macOS 15+): a sticker used as a tapback. The sticker is a transfer marked as one, like a
++// sticker the tapback menu makes, and IMTapbackSender sends it as an IMStickerTapback on the message part, the way
++// Messages' own tapbacks go out.
++static void IMBSendStickerTapback(IMChat *chat, NSDictionary *data, NSString *transaction) {
++    id path = data[@"filePath"], sid = data[@"stickerId"], shash = data[@"stickerHash"];
++    id target = data[@"selectedMessageGuid"];
++    if (![path isKindOfClass:[NSString class]] || ![sid isKindOfClass:[NSString class]]
++            || ![shash isKindOfClass:[NSString class]] || ![target isKindOfClass:[NSString class]]) {
++        IMBReply(transaction, @{@"error": @"A sticker tapback needs filePath, stickerId, stickerHash and selectedMessageGuid"});
++        return;
++    }
++    NSInteger part = [data[@"partIndex"] isKindOfClass:[NSNumber class]] ? [data[@"partIndex"] integerValue] : 0;
++    Class tapbackClass = NSClassFromString(@"IMStickerTapback"), senderClass = NSClassFromString(@"IMTapbackSender");
++    SEL makeTapback = NSSelectorFromString(@"initWithTransferGUID:isRemoved:");
++    SEL makeSender = NSSelectorFromString(@"initWithTapback:chat:messagePartChatItem:");
++    if (![tapbackClass instancesRespondToSelector:makeTapback] || ![senderClass instancesRespondToSelector:makeSender]) {
++        IMBReply(transaction, @{@"error": @"This macOS can't send sticker tapbacks"});
++        return;
++    }
++    NSDictionary *info = @{@"pid": @"com.apple.Stickers.UserGenerated.MessagesExtension", @"shash": shash, @"sid": sid,
++                           @"sir": @NO, @"spv": @0, @"suri": @"sticker:///user/identifier/"};
++    @try {
++        IMFileTransfer *transfer = IMBPrepareSticker([NSURL fileURLWithPath:path], info, nil);
++        NSString *transferGuid = [transfer guid];
++        if (transferGuid == nil) {
++            IMBReply(transaction, @{@"error": @"Couldn't prepare the sticker"});
++            return;
++        }
++        [[IMChatHistoryController sharedInstance] loadMessageWithGUID:target completionBlock:^(IMMessage *message) {
++            @try {
++                IMMessagePartChatItem *item = message ? IMBMessagePart(message, part) : nil;
++                if (item == nil) {
++                    IMBReply(transaction, @{@"error": @"Couldn't find that message to tapback"});
++                    return;
++                }
++                id tapback = ((id (*)(id, SEL, id, BOOL))objc_msgSend)([tapbackClass alloc], makeTapback, transferGuid, NO);
++                id sender = ((id (*)(id, SEL, id, id, id))objc_msgSend)([senderClass alloc], makeSender, tapback, chat, item);
++                id sent = ((id (*)(id, SEL))objc_msgSend)(sender, NSSelectorFromString(@"send"));
++                NSString *guid = [sent respondsToSelector:@selector(guid)] ? [sent guid] : [[chat lastSentMessage] guid];
++                IMBReply(transaction, @{@"identifier": guid ?: @""});
++            } @catch (NSException *exception) {
++                IMBReply(transaction, @{@"error": [NSString stringWithFormat:@"Couldn't send the sticker tapback: %@", exception.reason]});
++            }
++        }];
++    } @catch (NSException *exception) {
++        IMBReply(transaction, @{@"error": [NSString stringWithFormat:@"Couldn't send the sticker tapback: %@", exception.reason]});
++    }
++}
++
+ // imbridge: Send Later (macOS 15+). A scheduled message is built by the factory made for it, which takes the delivery
+ // date alone; building one by hand states the time twice, and IMCore has been seen honouring one and not the other
+ // (sending at once, or filing it in your own conversation). A chat that can't schedule sends at once, so ask first.
+@@ -832,6 +884,12 @@ -(void) handleServerEvent: (NSString*)event data: (NSDictionary*)data transactio
+         if (chat != nil) {
+             IMBSendSticker(chat, data, transaction);
+         }
++    // imbridge: tapback a message with a sticker
++    } else if ([event isEqualToString:@"send-sticker-tapback"]) {
++        IMChat *chat = [[BlueBubblesHelper sharedInstance] getIMChatFromGuid:data[@"chatGuid"] transaction:transaction];
++        if (chat != nil) {
++            IMBSendStickerTapback(chat, data, transaction);
++        }
+     // imbridge: schedule a message (Send Later)
+     } else if ([event isEqualToString:@"send-later"]) {
+         IMChat *chat = [[BlueBubblesHelper sharedInstance] getIMChatFromGuid:data[@"chatGuid"] transaction:transaction];

@@ -68,7 +68,9 @@ def _print_poll(results: PollResults, as_json: bool) -> None:
         print(f"  {option['votes']:>3}  {option['text']}{voters}")
 
 
-SENDING = ("send", "send-file", "send-sticker", "send-later", "cancel", "send-poll", "vote", "reply", "react")
+SENDING = (
+    "send", "send-file", "send-sticker", "react-sticker", "send-later", "cancel", "send-poll", "vote", "reply", "react",
+)
 
 
 def _when(value: str) -> datetime:
@@ -217,6 +219,8 @@ async def _send(args: argparse.Namespace) -> int:
             guid = await im.send_file(args.chat, args.path, reply_to=args.reply_to)
         elif args.command == "send-sticker":
             guid = await im.send_sticker(args.chat, args.path, on=args.on, label=args.label)
+        elif args.command == "react-sticker":
+            guid = await im.react_with_sticker(args.message, args.path)
         elif args.command == "send-later":
             guid = await im.send_later(args.chat, args.text, _when(args.at))
         elif args.command == "cancel":
@@ -285,6 +289,10 @@ def _parser() -> argparse.ArgumentParser:
     sticker.add_argument("path", help="a PNG, HEIC, GIF, JPEG or WebP (transparent backgrounds look best)")
     sticker.add_argument("--on", metavar="GUID", help="stick it onto this message instead of sending it on its own")
     sticker.add_argument("--label", help="what VoiceOver reads out for it")
+
+    react_sticker = commands.add_parser("react-sticker", parents=[mine], help="tapback a message with a sticker")
+    react_sticker.add_argument("message", metavar="GUID")
+    react_sticker.add_argument("path", help="the sticker: a PNG, HEIC, GIF, JPEG or WebP")
 
     later = commands.add_parser("send-later", parents=[mine], help="schedule a message with Send Later")
     later.add_argument("chat", help="phone number, email, group name, or chat GUID")

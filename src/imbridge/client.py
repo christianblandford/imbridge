@@ -110,6 +110,15 @@ def _poll_size(options: list[str], creator: str) -> int:
     return len(json.dumps({"version": 1, "item": item}, ensure_ascii=False, separators=(",", ":")).encode())
 
 
+def _sticker_file(path: str | Path) -> Path:
+    source = Path(path).expanduser()
+    if not source.is_file():
+        raise FileNotFoundError(f"no file at {source}")
+    if source.suffix.lower() not in STICKER_TYPES:
+        raise ValueError(f"a sticker is an image: {', '.join(STICKER_TYPES)}")
+    return source
+
+
 def _option_id(results: PollResults, option: str) -> str:
     """A poll option's id, from its id or its text (ignoring case)."""
     wanted = option.strip().casefold()
@@ -241,6 +250,11 @@ class Chat:
     ) -> str:
         """Send an image as a sticker, alone or stuck onto one of this chat's messages: see IMBridge.send_sticker."""
         return await self._bridge.send_sticker(self.guid, path, on=on, label=label)
+
+    async def react_with_sticker(self, message: Message | str, path: str | Path) -> str:
+        """Tapback one of this chat's messages with a sticker: see IMBridge.react_with_sticker."""
+        guid, part = await self._own(message)
+        return await self._bridge._sticker_tapback(self.guid, guid, part, path)
 
     async def send_later(self, text: str, at: datetime) -> str:
         """Schedule a message for later in this chat: see IMBridge.send_later."""
@@ -565,11 +579,7 @@ class IMBridge:
         A PNG or HEIC with a transparent background looks like one. label is what VoiceOver reads out. It's copied
         into Messages' Attachments folder first, like send_file. Returns the sticker's GUID.
         """
-        source = Path(path).expanduser()
-        if not source.is_file():
-            raise FileNotFoundError(f"no file at {source}")
-        if source.suffix.lower() not in STICKER_TYPES:
-            raise ValueError(f"a sticker is an image: {', '.join(STICKER_TYPES)}")
+        source = _sticker_file(path)
         chat_guid = self.resolve_chat(chat)
         target, part = None, 0
         if on is not None:
@@ -578,28 +588,44 @@ class IMBridge:
                 raise WrongChat(f"message {target} is in {on_chat}, not in {chat_guid}")
         self._check_send(chat_guid)
         self._guard.record_send(chat_guid)
+        request = {"chatGuid": chat_guid, "label": label or "", "selectedMessageGuid": target, "partIndex": part}
+        sent = await self._send_staged("send-sticker", source, request, sticker=True)
+        self._recent.append((time.monotonic(), chat_guid, f"reaction:{target}:sticker:False" if target else "text:"))
+        self._remember(sent, chat_guid)
+        return sent
+
+    async def react_with_sticker(self, message: Message | str, path: str | Path, *, chat: str | None = None) -> str:
+        """Tapback a message with a sticker (an image, like the stickers in Messages' tapback menu). Like any tapback,
+        it replaces your previous one on that message. Returns the tapback's GUID."""
+        guid, chat_guid, part = await self._target(message, chat)
+        return await self._sticker_tapback(chat_guid, guid, part, path)
+
+    async def _sticker_tapback(self, chat_guid: str, guid: str, part: int, path: str | Path) -> str:
+        source = _sticker_file(path)
+        self._check_send(chat_guid)
+        self._guard.record_send(chat_guid)
+        request = {"chatGuid": chat_guid, "selectedMessageGuid": guid, "partIndex": part}
+        sent = await self._send_staged("send-sticker-tapback", source, request, sticker=True)
+        self._recent.append((time.monotonic(), chat_guid, f"reaction:{guid}:sticker_tapback:False"))
+        return sent
+
+    async def _send_staged(self, action: str, source: Path, request: dict[str, Any], *, sticker: bool = False) -> str:
+        """Copy a file into ~/Library/Messages/Attachments/imbridge (sandboxed Messages reads nothing else; the copy
+        becomes the attachment), then ask the helper to send it. Call only once the send has passed the checks."""
         folder = config.OUTGOING / uuid.uuid4().hex
         folder.mkdir(parents=True)
         staged = folder / source.name
         shutil.copyfile(source, staged)
-        request = {
-            "chatGuid": chat_guid,
-            "filePath": str(staged),
-            "stickerId": str(uuid.uuid4()).upper(),
-            "stickerHash": hashlib.sha256(staged.read_bytes()).hexdigest()[:16],
-            "label": label or "",
-            "selectedMessageGuid": target,
-            "partIndex": part,
-        }
+        request = {**request, "filePath": str(staged)}
+        if sticker:
+            request["stickerId"] = str(uuid.uuid4()).upper()
+            request["stickerHash"] = hashlib.sha256(staged.read_bytes()).hexdigest()[:16]
         try:
-            result = await self._request("send-sticker", request)
+            result = await self._request(action, request)
         except HelperError:
-            shutil.rmtree(folder, ignore_errors=True)  # refused, so nothing refers to the copy
+            shutil.rmtree(folder, ignore_errors=True)  # refused, so nothing refers to the copy (unlike a timeout)
             raise
-        sent = result.get("identifier")
-        self._recent.append((time.monotonic(), chat_guid, f"reaction:{target}:sticker:False" if target else "text:"))
-        self._remember(sent, chat_guid)
-        return sent
+        return result.get("identifier")
 
     async def send_later(self, chat: str, text: str, at: datetime) -> str:
         """Schedule a message with Messages' Send Later; returns its GUID.
@@ -694,28 +720,16 @@ class IMBridge:
         self._check_send(chat_guid)
         self._guard.record_send(chat_guid)
         guid, part = parse_target(reply_to) if reply_to else (None, 0)
-        folder = config.OUTGOING / uuid.uuid4().hex
-        folder.mkdir(parents=True)
-        staged = folder / source.name
-        shutil.copyfile(source, staged)
-        try:
-            result = await self._request(
-                "send-attachment",
-                {
-                    "chatGuid": chat_guid,
-                    "filePath": str(staged),
-                    "isAudioMessage": 0,
-                    "attributedBody": None,
-                    "subject": None,
-                    "effectId": None,
-                    "selectedMessageGuid": guid,
-                    "partIndex": part,
-                },
-            )
-        except HelperError:
-            shutil.rmtree(folder, ignore_errors=True)  # refused, so nothing refers to the copy (unlike a timeout)
-            raise
-        sent = result.get("identifier")
+        request = {
+            "chatGuid": chat_guid,
+            "isAudioMessage": 0,
+            "attributedBody": None,
+            "subject": None,
+            "effectId": None,
+            "selectedMessageGuid": guid,
+            "partIndex": part,
+        }
+        sent = await self._send_staged("send-attachment", source, request)
         self._remember(sent, chat_guid)
         return sent
 
