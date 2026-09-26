@@ -57,6 +57,8 @@ def _message(message: Message) -> dict[str, Any]:
         item["edited"] = True
     if message.reply_to:
         item["reply_to"] = message.reply_to
+    if message.mentions:
+        item["mentions"] = list(message.mentions)
     if reaction := message.reaction:
         item["tapback"] = {"reaction": reaction.label, "removed": reaction.removed, "on": reaction.target_guid}
     if message.attachments:

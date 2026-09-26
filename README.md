@@ -201,6 +201,9 @@ async with IMBridge(allow=["+15551234567"]) as im:
         ...
     async for message in chat.changes():                  # messages as they're edited or unsent
         ...
+    async for message in chat.messages(include_events=True):   # plus people added, removed or leaving, renames
+        if message.event or im.mentions_me(message):      # in a group: answer only when @mentioned
+            ...
 
     await im.send("+15557654321", "hi")                   # allowed as NewContact("+15557654321"): starts a chat
     im.chats(20)                                          # recent chats, newest first; each has .can_send
@@ -240,6 +243,8 @@ Every `Message` has these fields:
 | `attachments` | each with a `path` on disk, `mime_type` and `name` |
 | `edited_at`, `edit_count` | set once it's been edited; `text` is then the edited text |
 | `unsent_at` | set once its sender took it back; `text` is then `None` |
+| `mentions` | the phone numbers and emails it @mentions; `im.mentions_me(message)` checks for this program's address |
+| `event` | set when the row is a change to a group rather than a message (streams and history include these with `include_events=True`): `kind` (`added`, `removed`, `left`, `renamed`, `photo_changed`, `photo_removed`, `other`), `person` (who was added, removed or left; `None` is you), `name` (for `renamed`) and `code`. `sender` is who made the change. |
 | `address` | which of your addresses it was sent to (or, for your own messages, sent from) |
 
 **Options.** `IMBridge(allow=..., address=..., max_per_chat=10, max_total=30)` are covered above. `inject=True` loads the helper
@@ -282,7 +287,7 @@ imbridge reply GUID "inline reply"
 imbridge react GUID 🔥 [--remove]
 imbridge chats [-n 20] [--json]
 imbridge history +15551234567 [-n 20] [--json]
-imbridge watch [--chat CHAT] [--json] [--from-me]    # stream new messages; --json prints one object per line
+imbridge watch [--chat CHAT] [--json] [--from-me] [--events]   # stream new messages; --json: one object per line
 imbridge mcp [--address ADDRESS]                     # the MCP server, over stdio (pip install "imbridge[mcp]")
 imbridge <command> --address +15550002222           # start, the sends, history, watch and mcp take it
 ```

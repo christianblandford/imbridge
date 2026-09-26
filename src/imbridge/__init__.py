@@ -3,7 +3,7 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from .addresses import ANY_ADDRESS, AddressNotChosen, WrongAddress
-from .chatdb import Attachment, ChatDB, ChatInfo, FullDiskAccessError, Message
+from .chatdb import Attachment, ChatDB, ChatInfo, FullDiskAccessError, GroupEvent, Message
 from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, WrongChat
 from .guard import ANY_CHAT, NewContact, RateLimited, SendNotAllowed
 from .protocol import HelperError, HelperNotConnected, HelperUnauthorized
@@ -28,6 +28,7 @@ __all__ = [
     "ChatNotFound",
     "EditLimit",
     "FullDiskAccessError",
+    "GroupEvent",
     "HelperError",
     "HelperNotConnected",
     "HelperUnauthorized",

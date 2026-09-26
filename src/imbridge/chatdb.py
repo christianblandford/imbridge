@@ -18,10 +18,12 @@ from typing import Any
 from .addresses import address_key, display_address
 from .config import CHAT_DB
 from .reactions import Reaction, parse_reaction
-from .typedstream import attributed_body_text
+from .typedstream import attributed_body_mentions, attributed_body_text
 
 APPLE_EPOCH = 978_307_200  # 2001-01-01T00:00:00Z as a Unix timestamp
 GROUP_STYLE = 43  # chat.style for group chats (45 is one-to-one)
+EVENT_TYPES = (1, 2, 3)  # message.item_type: someone added or removed, the group renamed, a group action
+_EVENT_KINDS = {(1, 0): "added", (1, 1): "removed", (3, 0): "left", (3, 1): "photo_changed", (3, 2): "photo_removed"}
 
 
 class FullDiskAccessError(PermissionError):
@@ -44,6 +46,16 @@ class Attachment:
 
 
 @dataclass(frozen=True)
+class GroupEvent:
+    """A change to a group, on the Message that records it. Its sender is who made the change (None: you)."""
+
+    kind: str  # "added", "removed", "left", "renamed", "photo_changed", "photo_removed", or "other"
+    person: str | None = None  # who was added, removed, or left (None: you)
+    name: str | None = None  # for "renamed", the new name (None when the name was cleared)
+    code: tuple[int, int] = (0, 0)  # chat.db's (item_type, group_action_type): tells apart kinds imbridge doesn't name
+
+
+@dataclass(frozen=True)
 class Message:
     rowid: int
     guid: str
@@ -62,6 +74,8 @@ class Message:
     edited_at: datetime | None = None  # when it was last edited; text is the edited text
     edit_count: int = 0  # how many times it has been edited
     unsent_at: datetime | None = None  # when its sender took it back (unsent); text is then None
+    mentions: tuple[str, ...] = ()  # the phone numbers and emails it @mentions
+    event: GroupEvent | None = None  # set when this row records a change to a group rather than a message
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -107,9 +121,9 @@ class ChatDB:
     def max_rowid(self) -> int:
         return self._query("SELECT max(ROWID) FROM message")[0][0] or 0
 
-    def messages_after(self, rowid: int, limit: int = 500) -> list[Message]:
-        """Messages newer than rowid, oldest first."""
-        return self._messages("m.ROWID > ? AND m.item_type = 0 ORDER BY m.ROWID LIMIT ?", (rowid, limit))
+    def messages_after(self, rowid: int, limit: int = 500, *, events: bool = False) -> list[Message]:
+        """Messages newer than rowid, oldest first; with events, group changes too."""
+        return self._messages(f"m.ROWID > ? AND {_kinds(events)} ORDER BY m.ROWID LIMIT ?", (rowid, limit))
 
     def message_at(self, rowid: int) -> Message | None:
         found = self._messages("m.ROWID = ?", (rowid,))
@@ -132,9 +146,9 @@ class ChatDB:
         found = self._messages("m.guid = ?", (guid,))
         return found[0] if found else None
 
-    def history(self, chat_guid: str, limit: int = 50) -> list[Message]:
-        """The chat's latest messages, oldest first."""
-        found = self._messages("c.guid = ? AND m.item_type = 0 ORDER BY m.ROWID DESC LIMIT ?", (chat_guid, limit))
+    def history(self, chat_guid: str, limit: int = 50, *, events: bool = False) -> list[Message]:
+        """The chat's latest messages, oldest first; with events, group changes too."""
+        found = self._messages(f"c.guid = ? AND {_kinds(events)} ORDER BY m.ROWID DESC LIMIT ?", (chat_guid, limit))
         return found[::-1]
 
     def chats(self, limit: int = 50) -> list[ChatInfo]:
@@ -240,7 +254,7 @@ class ChatDB:
                 ) from e
             if not message_columns:
                 raise FullDiskAccessError(f"{self.path} has no message table (is this Messages' chat.db?)")
-            self._select = _message_select(message_columns)
+            self._select = _message_select(message_columns, chat_columns)
             if "last_addressed_handle" in chat_columns:
                 self._chat_address = "c.last_addressed_handle"
             if "destination_caller_id" in message_columns:
@@ -278,6 +292,8 @@ class ChatDB:
         for row in rows:
             text = row["text"] or attributed_body_text(row["attributedBody"])
             text = (text or "").replace("￼", "").strip() or None  # U+FFFC stands in for attachments
+            event = _event(row)
+            address = row["destination_caller_id"] or (row["chat_address"] if event else None)  # some events lack it
             messages.append(
                 Message(
                     rowid=row["rowid"],
@@ -294,9 +310,11 @@ class ChatDB:
                     reaction=parse_reaction(
                         row["associated_message_type"], row["associated_message_guid"], row["associated_message_emoji"]
                     ),
-                    address=display_address(row["destination_caller_id"]),
+                    address=display_address(address),
                     **_changes(row),
                     attachments=attachments.get(row["rowid"], ()),
+                    mentions=tuple(map(display_address, attributed_body_mentions(row["attributedBody"]))),
+                    event=event,
                 )
             )
         return messages
@@ -319,22 +337,47 @@ class ChatDB:
         return {rowid: tuple(items) for rowid, items in found.items()}
 
 
-def _message_select(columns: set[str]) -> str:
+def _kinds(events: bool) -> str:
+    return f"m.item_type IN (0, {', '.join(map(str, EVENT_TYPES))})" if events else "m.item_type = 0"
+
+
+def _message_select(columns: set[str], chat_columns: set[str]) -> str:
     # Older macOS versions lack some of these columns; select NULL in their place.
     def column(name: str) -> str:
         return f"m.{name}" if name in columns else f"NULL AS {name}"
 
+    others = "other_handle" in columns
     return (
         "SELECT m.ROWID AS rowid, m.guid, m.text, m.attributedBody, m.is_from_me, m.date, m.service,"
         f" m.cache_has_attachments, {column('associated_message_guid')}, {column('associated_message_type')},"
         f" {column('associated_message_emoji')}, {column('thread_originator_guid')}, {column('destination_caller_id')},"
         f" {column('date_edited')}, {column('date_retracted')}, {column('message_summary_info')},"
+        f" {column('item_type')}, {column('group_action_type')}, {column('group_title')},"
+        f" {'oh.id' if others else 'NULL'} AS other_handle_id,"
+        f" {'c.last_addressed_handle' if 'last_addressed_handle' in chat_columns else 'NULL'} AS chat_address,"
         " h.id AS sender, c.guid AS chat_guid, c.display_name AS chat_name, c.style AS chat_style"
         " FROM message m"
         " LEFT JOIN handle h ON h.ROWID = m.handle_id"
+        f"{' LEFT JOIN handle oh ON oh.ROWID = m.other_handle' if others else ''}"
         " LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID"
         " LEFT JOIN chat c ON c.ROWID = cmj.chat_id"
     )
+
+
+def _event(row: sqlite3.Row) -> GroupEvent | None:
+    item_type, action = row["item_type"] or 0, row["group_action_type"] or 0
+    if item_type not in EVENT_TYPES:
+        return None
+    if item_type == 2:
+        return GroupEvent("renamed", name=row["group_title"] or None, code=(2, action))
+    kind = _EVENT_KINDS.get((item_type, action), "other")
+    if kind in ("added", "removed"):
+        person = row["other_handle_id"]
+    elif kind == "left":
+        person = None if row["is_from_me"] else row["sender"]
+    else:
+        person = None
+    return GroupEvent(kind, person=person, code=(item_type, action))
 
 
 def _changes(row: sqlite3.Row) -> dict[str, Any]:

@@ -16,6 +16,15 @@ from .guard import ANY_LINE, RateLimited, SendNotAllowed, read_allowed, write_al
 from .protocol import HelperError
 from .reactions import CLASSIC_TAPBACKS
 
+_EVENTS = {
+    "added": "added {person}",
+    "removed": "removed {person}",
+    "left": "left the group",
+    "renamed": "renamed the group to {name}",
+    "photo_changed": "changed the group photo",
+    "photo_removed": "removed the group photo",
+}
+
 
 def describe(message: Message) -> str:
     when = message.date.astimezone().strftime("%H:%M:%S") if message.date else "--:--:--"
@@ -23,7 +32,13 @@ def describe(message: Message) -> str:
     where = message.chat_name or message.chat_guid or "?"
     if message.address:
         where += f" via {message.address}"
-    if reaction := message.reaction:
+    if event := message.event:
+        who = message.sender or "me"  # who made the change
+        template = _EVENTS.get(event.kind, "changed the group ({code})")
+        if event.kind == "renamed" and not event.name:
+            template = "removed the group's name"
+        body = template.format(person=event.person or "me", name=f'"{event.name}"', code="/".join(map(str, event.code)))
+    elif reaction := message.reaction:
         body = f"{'removed ' if reaction.removed else ''}{reaction.label} on {reaction.target_guid}"
     else:
         body = message.text or ""
@@ -173,7 +188,7 @@ async def _send(args: argparse.Namespace) -> int:
 async def _watch(args: argparse.Namespace) -> int:
     im = _bridge(args, inject=False)
     stream = im.chat(args.chat).messages if args.chat else im.all_messages
-    async for message in stream(include_from_me=args.from_me):
+    async for message in stream(include_from_me=args.from_me, include_events=args.events):
         _print_message(message, args.json)
     return 0
 
@@ -238,6 +253,7 @@ def _parser() -> argparse.ArgumentParser:
     watch.add_argument("--chat", help="only this chat")
     watch.add_argument("--json", action="store_true", help="one JSON object per line")
     watch.add_argument("--from-me", action="store_true", help="include messages you send")
+    watch.add_argument("--events", action="store_true", help="include changes to groups (people added, renames...)")
 
     commands.add_parser("mcp", parents=[mine], help="run the MCP server (stdio) for Claude, Cursor and other clients")
     return parser

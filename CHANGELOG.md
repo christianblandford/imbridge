@@ -24,6 +24,11 @@
   from" setting, and SMS the iPhone forwarding texts to this Mac. With `address=` set, imbridge refuses
   (`WrongAddress`) to start one that would go out from another address; with none set, it refuses
   (`AddressNotChosen`) to start one from a second phone number of yours.
+- Group changes: with `include_events=True`, streams, `new_messages()` and `history()` also return the rows recording
+  people added, removed or leaving and renames, as messages with `event` set (a `GroupEvent`: `kind`, `person`, `name`,
+  `code`). `imbridge watch --events` prints them. Events missing an address take their chat's.
+- `Message.mentions`: the phone numbers and emails a message @mentions, and `im.mentions_me(message)` to check for the
+  program's own address.
 
 ## 0.2.0 (2026-09-26)
 

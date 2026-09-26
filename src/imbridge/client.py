@@ -149,14 +149,17 @@ class Chat:
     def to_dict(self) -> dict[str, Any]:
         return {**self.info.to_dict(), "participants": list(self.participants)}
 
-    async def messages(self, *, since: int | None = None, include_from_me: bool = False) -> AsyncIterator[Message]:
-        """This chat's new messages, tapbacks and inline replies as they arrive (from now, or after a ROWID)."""
-        async for message in self._bridge._stream(since, include_from_me, self.guid):
+    async def messages(
+        self, *, since: int | None = None, include_from_me: bool = False, include_events: bool = False
+    ) -> AsyncIterator[Message]:
+        """This chat's new messages, tapbacks and inline replies as they arrive (from now, or after a ROWID).
+        include_events adds changes to the group (people added, removed or leaving, renames), with .event set."""
+        async for message in self._bridge._stream(since, include_from_me, self.guid, include_events):
             yield message
 
-    def history(self, limit: int = 50) -> list[Message]:
+    def history(self, limit: int = 50, *, include_events: bool = False) -> list[Message]:
         """This chat's latest messages, oldest first."""
-        return self._bridge.history(self.guid, limit)
+        return self._bridge.history(self.guid, limit, include_events=include_events)
 
     async def send(self, text: str, *, effect: str | None = None, subject: str | None = None) -> str:
         return await self._bridge.send(self.guid, text, effect=effect, subject=subject)
@@ -543,17 +546,26 @@ class IMBridge:
 
     # --- receiving -----------------------------------------------------------------------------------------------
 
-    async def all_messages(self, *, since: int | None = None, include_from_me: bool = False) -> AsyncIterator[Message]:
+    async def all_messages(
+        self, *, since: int | None = None, include_from_me: bool = False, include_events: bool = False
+    ) -> AsyncIterator[Message]:
         """New messages from every chat as they arrive, tapbacks and inline replies included.
 
         For a bot that answers in one conversation, use chat.messages() instead. Starts from now, or after the given
-        chat.db ROWID; your own messages are skipped unless include_from_me.
+        chat.db ROWID; your own messages are skipped unless include_from_me. include_events adds changes to groups
+        (people added, removed or leaving, renames), with .event set.
         """
-        async for message in self._stream(since, include_from_me, None):
+        async for message in self._stream(since, include_from_me, None, include_events):
             yield message
 
     async def new_messages(
-        self, *, since: int, chat: str | None = None, wait: float = 0, include_from_me: bool = False
+        self,
+        *,
+        since: int,
+        chat: str | None = None,
+        wait: float = 0,
+        include_from_me: bool = False,
+        include_events: bool = False,
     ) -> tuple[list[Message], int]:
         """Messages after chat.db ROWID `since` (one chat, or every chat), waiting up to `wait` seconds for the first.
 
@@ -565,7 +577,7 @@ class IMBridge:
         cursor = _Cursor(since)
         deadline = time.monotonic() + max(wait, 0)
         while True:
-            found, idle = await self._poll(cursor, include_from_me, chat_guid)
+            found, idle = await self._poll(cursor, include_from_me, chat_guid, include_events)
             if found or time.monotonic() >= deadline:
                 return found, cursor.last
             if idle:
@@ -581,11 +593,18 @@ class IMBridge:
         async for message in self._changes(self.resolve_chat(chat) if chat else None, include_from_me):
             yield message
 
-    def history(self, chat: str, limit: int = 50) -> list[Message]:
+    def history(self, chat: str, limit: int = 50, *, include_events: bool = False) -> list[Message]:
         """A chat's latest messages to this program's address, oldest first."""
         self._check_address()
-        found = self.db.history(self.resolve_chat(chat), limit)
+        found = self.db.history(self.resolve_chat(chat), limit, events=include_events)
         return [message for message in found if self._admits(message, strict=False)]
+
+    def mentions_me(self, message: Message) -> bool:
+        """Whether a message @mentions this program's address (with no address set, any of your addresses): in a
+        group, answer only when someone asks for you."""
+        self._check_address()
+        mentioned = {address_key(address) for address in message.mentions}
+        return self._address_key in mentioned if self._address_key is not None else bool(mentioned & self._mine)
 
     def message(self, guid: str) -> Message | None:
         """One message by GUID (a "p:N/GUID" tapback target works too), or None."""
@@ -712,21 +731,23 @@ class IMBridge:
     def _age(message: Message) -> float:
         return time.time() - message.date.timestamp() if message.date else 0.0
 
-    async def _stream(self, since: int | None, include_from_me: bool, chat_guid: str | None) -> AsyncIterator[Message]:
+    async def _stream(
+        self, since: int | None, include_from_me: bool, chat_guid: str | None, include_events: bool = False
+    ) -> AsyncIterator[Message]:
         await asyncio.to_thread(self._check_address)
         cursor = _Cursor(since if since is not None else await asyncio.to_thread(self.db.max_rowid))
         while True:
-            found, idle = await self._poll(cursor, include_from_me, chat_guid)
+            found, idle = await self._poll(cursor, include_from_me, chat_guid, include_events)
             for message in found:
                 yield message
             if idle:
                 await asyncio.sleep(self.poll_interval)
 
     async def _poll(
-        self, cursor: _Cursor, include_from_me: bool, chat_guid: str | None
+        self, cursor: _Cursor, include_from_me: bool, chat_guid: str | None, include_events: bool = False
     ) -> tuple[list[Message], bool]:
         """One read past the cursor: the messages this program should see, and whether to wait before reading again."""
-        batch = await asyncio.to_thread(self.db.messages_after, cursor.last)
+        batch = await asyncio.to_thread(self.db.messages_after, cursor.last, events=include_events)
         found: list[Message] = []
         for message in batch:
             if message.rowid <= cursor.last:  # a message linked to two chats appears twice
