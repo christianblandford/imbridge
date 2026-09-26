@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 (unreleased)
+## 0.4.0 (2026-09-26)
 
 - Send Later: `chat.send_later(text, at)` schedules a message with Messages' own Send Later, to the minute and up to
   14 days ahead; it goes out even if nothing is running then. `chat.scheduled()` lists what's waiting (each with
