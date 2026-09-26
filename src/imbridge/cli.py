@@ -8,9 +8,9 @@ import json
 import sys
 
 from . import __version__
-from .addresses import ANY_ADDRESS, AddressNotChosen, WrongAddress
+from .addresses import ANY_ADDRESS, AddressNotChosen, WrongAddress, contact_address
 from .chatdb import FullDiskAccessError, Message
-from .client import EFFECTS, Chat, ChatNotFound, IMBridge, WrongChat
+from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, WrongChat
 from .doctor import run_checks
 from .guard import ANY_LINE, RateLimited, SendNotAllowed, read_allowed, write_allowed
 from .protocol import HelperError
@@ -92,7 +92,20 @@ def _allow(args: argparse.Namespace) -> int:
     if not args.chat:
         print("imbridge: name a chat (GUID, phone number or email), or use --any", file=sys.stderr)
         return 2
-    chat = IMBridge(inject=False).chat(args.chat)
+    try:
+        chat = IMBridge(inject=False).chat(args.chat)
+    except ChatNotFound:
+        person = contact_address(args.chat)
+        if person is None:
+            raise
+        answer = input(f"You have no conversation with {person} yet. Let imbridge start one and message them? [y/N] ")
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Nothing changed.")
+            return 1
+        allowed.add(person)
+        write_allowed(allowed)
+        print(f"imbridge may now message {person}.")
+        return 0
     members = f" ({', '.join(chat.participants)})" if chat.is_group and chat.participants else ""
     answer = input(f"Let imbridge send to {_label(chat)}{members}, chat {chat.guid}? [y/N] ")
     if answer.strip().lower() not in ("y", "yes"):
@@ -127,8 +140,11 @@ def _allowed() -> int:
     if ANY_LINE in allowed:
         print("* any chat (imbridge allow --any)")
     im = IMBridge(inject=False)
-    for guid in sorted(allowed - {ANY_LINE}):
-        print(f"{guid}  {_label(im.chat(guid))}")
+    for entry in sorted(allowed - {ANY_LINE}):
+        try:
+            print(f"{entry}  {_label(im.chat(entry))}")
+        except ChatNotFound:
+            print(f"{entry}  (no conversation yet)")
     return 0
 
 
@@ -144,6 +160,8 @@ async def _send(args: argparse.Namespace) -> int:
     async with _bridge(args) as im:
         if args.command == "send":
             guid = await im.send(args.chat, args.text, reply_to=args.reply_to, effect=args.effect)
+        elif args.command == "send-file":
+            guid = await im.send_file(args.chat, args.path, reply_to=args.reply_to)
         elif args.command == "reply":
             guid = await im.reply(args.message, args.text)
         else:
@@ -191,6 +209,11 @@ def _parser() -> argparse.ArgumentParser:
     send.add_argument("--reply-to", metavar="GUID", help="send it as an inline reply to this message")
     send.add_argument("--effect", choices=sorted(EFFECTS), help="bubble or screen effect")
 
+    send_file = commands.add_parser("send-file", parents=[mine], help="send a photo, GIF, video or document")
+    send_file.add_argument("chat", help="phone number, email, group name, or chat GUID")
+    send_file.add_argument("path")
+    send_file.add_argument("--reply-to", metavar="GUID", help="send it as an inline reply to this message")
+
     reply = commands.add_parser("reply", parents=[mine], help="reply inline to a message in an allowed chat")
     reply.add_argument("message", metavar="GUID")
     reply.add_argument("text")
@@ -233,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
             return _allowed()
         if args.command == "start":
             return asyncio.run(_start(args))
-        if args.command in ("send", "reply", "react"):
+        if args.command in ("send", "send-file", "reply", "react"):
             return asyncio.run(_send(args))
         if args.command == "watch":
             return asyncio.run(_watch(args))
@@ -258,6 +281,8 @@ def main(argv: list[str] | None = None) -> int:
         FullDiskAccessError,
         ChatNotFound,
         WrongChat,
+        EditLimit,
+        FileNotFoundError,
         SendNotAllowed,
         AddressNotChosen,
         WrongAddress,

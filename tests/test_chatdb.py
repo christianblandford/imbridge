@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 from helpers import ALEX, CREW
 
-from imbridge import ChatNotFound, IMBridge, SendNotAllowed, WrongChat
+from imbridge import ChatNotFound, IMBridge, NewContact, SendNotAllowed, WrongChat
 from imbridge.chatdb import ChatDB, FullDiskAccessError
 
 
@@ -125,9 +125,21 @@ def test_inline_allowlist(chat_db):
 
 
 def test_allowlist_typos_fail_at_start(chat_db):
-    im = bridge(chat_db, allow=["Crew", "+19998887777"])
-    with pytest.raises(ChatNotFound, match="19998887777"):
+    im = bridge(chat_db, allow=["Crew", "Crue"])
+    with pytest.raises(ChatNotFound, match="Crue"):
         asyncio.run(im.start())  # before it ever waits for the helper
+
+
+def test_allowing_someone_you_havent_messaged_yet(chat_db):
+    with pytest.raises(ChatNotFound, match="19998887777"):  # a plain entry must match a chat: this could be a typo
+        asyncio.run(bridge(chat_db, allow=["+19998887777"]).start())
+    im = bridge(chat_db, allow=[NewContact("+19998887777"), NewContact("new@example.com")])
+    assert im._guard.resolve_allowed() == set()  # no chats yet, and no error
+    assert im._guard.allows_handle("+1 (999) 888-7777")
+    assert im._guard.allows_handle("NEW@example.com")
+    assert im._guard.allows("any;-;+19998887777")  # the chat once it exists
+    assert not im._guard.allows_handle("+15551234567")
+    assert not im._guard.allows(ALEX)
 
 
 def test_sending_needs_an_allowed_chat(chat_db):

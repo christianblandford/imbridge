@@ -58,3 +58,15 @@ def address_key(address: str | None) -> str | None:
 def is_phone(address: str | None) -> bool:
     key = address_key(address)
     return key is not None and "@" not in key
+
+
+def contact_address(value: str) -> str | None:
+    """A phone number in international form (+15551234567) or an email: someone a conversation can be started with.
+
+    Local numbers don't count, so a missing country code can never reach a stranger's number.
+    """
+    value = value.strip()
+    if "@" in value and ";" not in value and " " not in value:
+        return value.lower()
+    digits = re.sub(r"\D", "", value)
+    return f"+{digits}" if value.startswith("+") and 8 <= len(digits) <= 15 else None

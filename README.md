@@ -42,8 +42,8 @@ claude mcp add imessage -- imbridge mcp   # then: "text Alex that I'm running la
   limits stop runaway loops, and with two numbers on one Apple ID it only answers on the one you choose.
 - **Any-emoji tapbacks.** The classic six plus any emoji, as iOS 18 and macOS 15 allow. BlueBubbles' released helper
   and imsg can only send the classic six.
-- **Real iMessage features.** Inline replies, tapbacks, message effects, typing indicators and read receipts, done by
-  Messages itself rather than by scripting its UI.
+- **Real iMessage features.** Inline replies, tapbacks, photos and files, edits and unsends, message effects, typing
+  indicators and read receipts, done by Messages itself rather than by scripting its UI.
 - **Current.** Tested on macOS 27. It fixes a macOS 26+ crash in BlueBubbles' helper when it replies or reacts while
   someone is typing.
 
@@ -140,10 +140,12 @@ imbridge is built so that a bug in your code, or an agent getting creative, can'
   anything else raises `SendNotAllowed` before Messages is touched. A chat can be allowed two ways, and both are
   deliberate:
   - **In your code:** `IMBridge(allow=["+15551234567", "Family"])` takes phone numbers, emails, group names and chat
-    GUIDs. `start()` checks that each one matches exactly one chat, so a typo fails immediately. A running program
-    can't add chats; there's no `allow()` to call from a loop.
+    GUIDs. `start()` checks that each one matches exactly one chat, so a typo fails immediately. Someone you have no
+    conversation with yet has to be marked as new, `NewContact("+15557654321")`, so that check still catches a
+    mistyped number. A running program can't add chats; there's no `allow()` to call from a loop.
   - **For every program on the Mac:** `imbridge allow <chat>` asks for confirmation and refuses to run without a
-    terminal, so an agent driving the CLI can't add chats itself.
+    terminal, so an agent driving the CLI can't add chats itself. It takes someone new too, and says so when you
+    have no conversation with them yet.
 
   Allowing every chat takes a deliberate `allow=ANY_CHAT` in code, or `imbridge allow --any`.
 - **Chat handles.** `chat.messages()` yields only that chat's messages, and `chat.reply()` and `chat.react()` raise
@@ -168,6 +170,10 @@ async with IMBridge(address="+15550002222", allow=["+15551234567"]) as im:   # o
 - **It only sends from that address.** Messages replies from whatever address a conversation is on, so imbridge
   refuses (`WrongAddress`) to send in a chat that's on another address. It also refuses to reply or react to a message
   that was sent to another address.
+- **New conversations too.** Messages starts a new iMessage conversation from the address chosen under Messages >
+  Settings > iMessage > "Start new conversations from", and a new SMS conversation through the iPhone that forwards
+  texts to this Mac. imbridge can't pick a different one, so it refuses (`WrongAddress`) to start a conversation that
+  would go out from another address.
 - **Without an address,** imbridge refuses to read or send (`AddressNotChosen`) while this Mac has recent messages at
   more than one of your phone numbers. If a second number turns up while a program is running, the stream stops with
   the same error instead of passing that message on. Use `address=ANY_ADDRESS` to deliberately take every number.
@@ -184,6 +190,8 @@ async with IMBridge(allow=["+15551234567"]) as im:
     await chat.react(guid, "love")                        # love, like, dislike, laugh, emphasize, question
     await chat.react(guid, "🔥")                          # ...or any emoji
     await chat.react(guid, "🔥", remove=True)
+    await chat.send_file("chart.png")                     # a photo, GIF, video or document
+    await chat.send_file("chart.png", reply_to=guid)      # ...as an inline reply
     await chat.typing()                                   # typing indicator on; chat.typing(False) turns it off
     await chat.edit(guid, "fixed a typo")                 # your own messages: up to 5 edits, within 15 minutes
     await chat.unsend(guid)                               # within 2 minutes
@@ -194,6 +202,7 @@ async with IMBridge(allow=["+15551234567"]) as im:
     async for message in chat.changes():                  # messages as they're edited or unsent
         ...
 
+    await im.send("+15557654321", "hi")                   # allowed as NewContact("+15557654321"): starts a chat
     im.chats(20)                                          # recent chats, newest first; each has .can_send
     im.message(guid)                                      # one message, or None
     async for message in im.all_messages():               # every chat: be deliberate about who you answer
@@ -205,8 +214,18 @@ A group's name only works when no other chat shares it; otherwise imbridge refus
 
 A chat has `guid`, `name`, `is_group`, `participants` (everyone but the address the program runs as),
 `last_message_at`, `address` (which of your addresses it's on) and `can_send`. `IMBridge` also has `send`,
-`reply`, `react`, `typing` and `mark_read` that take a chat or message GUID directly; the same allowlist and limits
-apply. iMessage keeps one tapback per person per message, so a new tapback replaces your previous one.
+`send_file`, `reply`, `react`, `edit`, `unsend`, `typing` and `mark_read` that take a chat or message GUID directly;
+the same allowlist and limits apply. iMessage keeps one tapback per person per message, so a new tapback replaces your
+previous one.
+
+**Starting conversations.** `im.send()` to a phone number or email you have no conversation with starts one, over
+iMessage if they have it and SMS otherwise. They have to be allowed: `IMBridge(allow=[NewContact("+15557654321")])`
+in code, or `imbridge allow +15557654321`. The number needs its country code; a local number is refused, so a missing
+`+1` can't reach a stranger. See [which address](#which-of-your-numbers-it-answers-on) it goes out from.
+
+**Files.** `send_file()` sends photos, GIFs, videos and documents. Messages is sandboxed and can only read files inside
+`~/Library/Messages`, so imbridge first copies the file to `~/Library/Messages/Attachments/imbridge/`. That copy becomes
+the attachment Messages keeps, like every other file in its Attachments folder.
 
 Every `Message` has these fields:
 
@@ -231,8 +250,9 @@ touches `chat.db`, so it works without the helper.
 **Errors.** `SendNotAllowed` means the chat isn't allowed. `RateLimited` means a limit was hit. `EditLimit` means
 iMessage's own limits on editing or unsending have passed (`kind` says which). `AddressNotChosen`
 means this Mac gets messages at several of your phone numbers and the program hasn't said which it is. `WrongAddress`
-means a chat or message is on another of your addresses. `WrongChat` means a
-chat was handed another chat's message. `ChatNotFound` means no existing conversation matches. `HelperError` means the
+means a chat or message is on another of your addresses, or a new conversation would start from one. `WrongChat`
+means a chat was handed another chat's message. `ChatNotFound` means no existing conversation matches, and it isn't
+someone a conversation can be started with. `HelperError` means the
 helper refused or failed; its subclasses are `HelperNotConnected` and `HelperUnauthorized`. `FullDiskAccessError`
 means `chat.db` can't be read.
 
@@ -256,17 +276,18 @@ imbridge start                         # load the helper into Messages
 imbridge allow CHAT | --any            # let imbridge send to a chat (asks you to confirm)
 imbridge disallow CHAT | --any
 imbridge allowed
-imbridge send +15551234567 "hello" [--reply-to GUID] [--effect confetti]
+imbridge send +15551234567 "hello" [--reply-to GUID] [--effect confetti]   # someone new: starts a conversation
+imbridge send-file +15551234567 photo.jpg [--reply-to GUID]
 imbridge reply GUID "inline reply"
 imbridge react GUID 🔥 [--remove]
 imbridge chats [-n 20] [--json]
 imbridge history +15551234567 [-n 20] [--json]
 imbridge watch [--chat CHAT] [--json] [--from-me]    # stream new messages; --json prints one object per line
 imbridge mcp [--address ADDRESS]                     # the MCP server, over stdio (pip install "imbridge[mcp]")
-imbridge <command> --address +15550002222           # start, send, reply, react, history, watch and mcp take it
+imbridge <command> --address +15550002222           # start, the sends, history, watch and mcp take it
 ```
 
-`send`, `reply` and `react` print the new message's GUID. They follow the same allowlist and rate limits as the
+`send`, `send-file`, `reply` and `react` print the new message's GUID. They follow the same allowlist and rate limits as the
 library.
 
 ## Using it with an AI agent
@@ -292,7 +313,7 @@ itself.
 | `list_chats` | recent chats, and whether the agent may send in each (`can_send`) |
 | `read_messages` | a chat's latest messages |
 | `check_messages` | messages since the last check; `wait_seconds` waits for a reply |
-| `send_message` | a new message, optionally with an effect |
+| `send_message` | a new message, optionally with an effect; or a new conversation with someone the user allowed |
 | `reply` | an inline reply to a message |
 | `react` | a tapback with any emoji or a classic |
 | `edit_message`, `unsend_message` | change or take back a message it sent, within iMessage's limits |
@@ -330,8 +351,10 @@ read `chat.db`.
 ## Limitations
 
 - Apple Silicon only; the helper is built for arm64e.
-- Only existing conversations. Start a chat in Messages first; starting new ones isn't supported yet.
-- The helper can also send attachments, edit, unsend and manage groups, but the Python API doesn't wrap those yet.
+- New conversations go out from the address Messages picks (see [above](#which-of-your-numbers-it-answers-on)), so a
+  program on another address can't start them.
+- New conversations are one-to-one. The helper can also create and manage groups, but the Python API doesn't wrap
+  that yet.
 - Messages restarts, hidden, whenever imbridge loads the helper, which closes its windows.
 - Streams check `chat.db` every half second (see `poll_interval`), so new messages can take up to that long to arrive.
 - SMS goes through your iPhone, so Text Message Forwarding must be on.

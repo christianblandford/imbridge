@@ -192,6 +192,15 @@ class ChatDB:
                 found[key] = shown
         return list(found.values())
 
+    def texting_address(self) -> str | None:
+        """The number the last SMS (or RCS) sent from this Mac went out through: the iPhone forwarding texts here."""
+        self._connect()
+        rows = self._query(
+            f"SELECT {self._message_address} FROM message WHERE is_from_me = 1 AND service IN ('SMS', 'RCS')"
+            f" AND {self._message_address} IS NOT NULL ORDER BY date DESC LIMIT 1"
+        )
+        return display_address(rows[0][0]) if rows else None
+
     def chat_for_handle(self, handle: str) -> str | None:
         """The most recently active one-to-one chat with a phone number or email, if there is one."""
         handle = handle.strip()

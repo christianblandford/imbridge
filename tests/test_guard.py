@@ -1,7 +1,16 @@
 import pytest
 
 from imbridge import config
-from imbridge.guard import ANY_CHAT, ANY_LINE, RateLimited, SendGuard, SendNotAllowed, read_allowed, write_allowed
+from imbridge.guard import (
+    ANY_CHAT,
+    ANY_LINE,
+    NewContact,
+    RateLimited,
+    SendGuard,
+    SendNotAllowed,
+    read_allowed,
+    write_allowed,
+)
 
 ALEX, CREW = "any;-;+15551234567", "any;+;chat123"
 
@@ -46,6 +55,33 @@ def test_allowed_in_code_resolves_phone_numbers():
     guard = SendGuard(["(555) 123-4567"], resolve=lambda chat: ALEX if "555" in chat else chat)
     assert guard.allows(ALEX)
     assert not guard.allows(CREW)
+
+
+def no_conversations(entry):
+    raise LookupError(entry)
+
+
+def test_people_allowed_before_you_have_a_conversation():
+    guard = SendGuard([NewContact("+1 (555) 000-9999"), NewContact("new@example.com")], resolve=no_conversations)
+    assert guard.allows_handle("+15550009999") and guard.allows_handle("NEW@example.com")
+    assert guard.allows("any;-;+15550009999")  # the conversation, once it has started
+    assert not guard.allows_handle("+15550001234")
+    for typo in ["Crue", "+15550009998"]:  # anything else that matches no chat is a typo, numbers included
+        with pytest.raises(LookupError):
+            SendGuard([typo], resolve=no_conversations).resolve_allowed()
+
+
+def test_new_contacts_need_a_full_number_or_an_email():
+    assert NewContact(" +1 (555) 000-9999 ") == "+15550009999"
+    for vague in ["555 000 9999", "Crew", "any;-;+15550009999"]:
+        with pytest.raises(ValueError):
+            NewContact(vague)
+
+
+def test_an_allowed_group_is_never_taken_for_a_person():
+    write_allowed({"any;+;chat935842394823948234"})  # mostly digits, ending like a phone number
+    assert not SendGuard().allows_handle("+14823948234")
+    assert not SendGuard().allows("any;-;+14823948234")
 
 
 def test_any_chat_in_code():

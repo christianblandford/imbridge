@@ -84,7 +84,7 @@ def _refusal(error: Exception) -> ToolError:
     elif isinstance(error, RateLimited):
         advice = "Wait a minute before sending more."
     elif isinstance(error, (AddressNotChosen, WrongAddress)):
-        advice = "The user has to set which of their numbers this server uses (--address). Tell them."
+        advice = "Only the user can fix this (with --address, or in Messages' settings). Tell them."
     elif isinstance(error, FullDiskAccessError):
         advice = "The app running this MCP server needs Full Disk Access. Tell the user."
     elif isinstance(error, HelperError):
@@ -147,8 +147,9 @@ def build_server(im: IMBridge) -> MCPServer:
 
     @server.tool(
         annotations=SENDS,
-        description="Send a new message to an allowed chat. Returns its guid. `effect` is an optional bubble or "
-        f"screen effect: {', '.join(EFFECTS)}.",
+        description="Send a new message to an allowed chat, or start a conversation with a phone number (with its "
+        "country code, like +15551234567) or email the user has allowed. Returns its guid. `effect` is an optional "
+        f"bubble or screen effect: {', '.join(EFFECTS)}.",
     )
     async def send_message(chat: str, text: str, effect: str | None = None) -> dict[str, Any]:
         try:

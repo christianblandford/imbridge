@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import time
+import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
@@ -14,10 +16,19 @@ from pathlib import Path
 from typing import Any
 
 from . import config, messages_app
-from .addresses import ANY_ADDRESS, AddressNotChosen, AnyAddress, WrongAddress, address_key, is_phone
+from .addresses import (
+    ANY_ADDRESS,
+    AddressNotChosen,
+    AnyAddress,
+    WrongAddress,
+    address_key,
+    contact_address,
+    display_address,
+    is_phone,
+)
 from .chatdb import APPLE_EPOCH, ChatDB, ChatInfo, Message
 from .guard import AnyChat, SendGuard
-from .protocol import HelperNotConnected, HelperServer, HelperUnauthorized
+from .protocol import HelperError, HelperNotConnected, HelperServer, HelperUnauthorized
 from .reactions import parse_target, reaction_label, reaction_type
 
 log = logging.getLogger(__name__)
@@ -149,6 +160,12 @@ class Chat:
 
     async def send(self, text: str, *, effect: str | None = None, subject: str | None = None) -> str:
         return await self._bridge.send(self.guid, text, effect=effect, subject=subject)
+
+    async def send_file(self, path: str | Path, *, reply_to: Message | str | None = None) -> str:
+        """Send a file (a photo, GIF, video or document); reply_to makes it an inline reply to one of this chat's
+        messages. Returns the new message's GUID."""
+        target = _target_ref(*await self._own(reply_to)) if reply_to is not None else None
+        return await self._bridge.send_file(self.guid, path, reply_to=target)
 
     async def reply(self, message: Message | str, text: str) -> str:
         """Reply inline to one of this chat's messages (a Message or its GUID)."""
@@ -301,12 +318,28 @@ class IMBridge:
         effect: str | None = None,
         subject: str | None = None,
     ) -> str:
-        """Send text to an allowed chat (a chat GUID, a phone number or email, or a group's name).
+        """Send text to an allowed chat: a chat GUID, a group's name, or a phone number or email.
+
+        A phone number (in international form, +15551234567) or email with no conversation yet starts one, over
+        iMessage if they have it and SMS otherwise. Messages decides which of your addresses that goes out from (its
+        "Start new conversations from" setting; for SMS, your iPhone's number), so with an address set this raises
+        WrongAddress unless it would be this program's.
 
         Returns the new message's GUID. reply_to makes it an inline reply to that message GUID; effect is a key of
         EFFECTS (or a raw Messages effect identifier).
         """
-        chat_guid = self.resolve_chat(chat)
+        try:
+            chat_guid = self.resolve_chat(chat)
+        except ChatNotFound:
+            handle = contact_address(chat)
+            if handle is None or reply_to:
+                if handle is None and address_key(chat) and "@" not in chat and not chat.strip().startswith("+"):
+                    raise ChatNotFound(
+                        f"no conversation with {chat}; to start one, give the number with its country code, "
+                        "like +15551234567"
+                    ) from None
+                raise
+            return await self._start_chat(handle, text, effect=effect, subject=subject)
         self._check_send(chat_guid)
         self._guard.record_send(chat_guid)
         guid, part = parse_target(reply_to) if reply_to else (None, 0)
@@ -325,11 +358,111 @@ class IMBridge:
         )
         sent = result.get("identifier")
         self._recent.append((time.monotonic(), chat_guid, f"text:{text.strip()}"))
+        self._remember(sent, chat_guid)
+        return sent
+
+    async def send_file(self, chat: str, path: str | Path, *, reply_to: str | None = None) -> str:
+        """Send a file (a photo, GIF, video or document) to an allowed chat; returns the new message's GUID.
+
+        reply_to makes it an inline reply. The file is first copied into ~/Library/Messages/Attachments/imbridge:
+        Messages is sandboxed and can't read it anywhere else, and that copy becomes the attachment Messages keeps.
+        """
+        source = Path(path).expanduser()
+        if not source.is_file():
+            raise FileNotFoundError(f"no file at {source}")
+        chat_guid = self.resolve_chat(chat)
+        self._check_send(chat_guid)
+        self._guard.record_send(chat_guid)
+        guid, part = parse_target(reply_to) if reply_to else (None, 0)
+        folder = config.OUTGOING / uuid.uuid4().hex
+        folder.mkdir(parents=True)
+        staged = folder / source.name
+        shutil.copyfile(source, staged)
+        try:
+            result = await self._request(
+                "send-attachment",
+                {
+                    "chatGuid": chat_guid,
+                    "filePath": str(staged),
+                    "isAudioMessage": 0,
+                    "attributedBody": None,
+                    "subject": None,
+                    "effectId": None,
+                    "selectedMessageGuid": guid,
+                    "partIndex": part,
+                },
+            )
+        except HelperError:
+            shutil.rmtree(folder, ignore_errors=True)  # refused, so nothing refers to the copy (unlike a timeout)
+            raise
+        sent = result.get("identifier")
+        self._remember(sent, chat_guid)
+        return sent
+
+    async def _start_chat(self, handle: str, text: str, *, effect: str | None, subject: str | None) -> str:
+        self._guard.check_allowed_handle(handle)
+        self._check_address()
+        chat_guid = f"any;-;{handle}"  # what the conversation will be called
+        self._guard.record_send(chat_guid)  # before asking Messages anything; a refused attempt counts too
+        service = await self._service_for(handle)
+        await self._check_new_chat_address(service)
+        result = await self._request(
+            "create-chat",
+            {
+                "addresses": [handle],
+                "service": service,
+                "message": text,
+                "attributedBody": None,
+                "effectId": EFFECTS.get(effect, effect) if effect else None,
+                "subject": subject,
+            },
+        )
+        self._recent.append((time.monotonic(), chat_guid, f"text:{text.strip()}"))
+        return result.get("identifier")
+
+    async def _check_new_chat_address(self, service: str) -> None:
+        """Messages can't be told which address a new conversation goes out from: iMessage uses the "Start new
+        conversations from" setting, SMS the number of the iPhone forwarding texts to this Mac. Refuse unless that is
+        this program's address (or, with none given, not a second phone number of yours)."""
+        if isinstance(self.address, AnyAddress):
+            return
+        if service == "iMessage":
+            info = await self._request("get-account-info", {})
+            used = display_address(info.get("active_alias"))
+            where = f"new conversations start from {used or 'an address Messages picks'}"
+            advice = (
+                'Choose {} in Messages > Settings > iMessage > "Start new conversations from", or start the '
+                "conversation yourself."
+            )
+            second = "New conversations start from a second phone number of yours"
+        else:
+            used = await asyncio.to_thread(self.db.texting_address)
+            where = f"they aren't on iMessage, and texts go out through {used or 'whichever iPhone forwards them here'}"
+            advice = "Start the conversation yourself, from the phone with {}."
+            second = "Texts go out through a second phone number of yours"
+        key = address_key(used)
+        if self._address_key is not None:
+            if key != self._address_key:
+                mine = display_address(self.address)
+                raise WrongAddress(f"{where}, not {mine} (the address this program uses). {advice.format(mine)}")
+        elif key is not None and "@" not in key and self._pinned_phone not in (None, key):
+            raise AddressNotChosen(_choose_address([used], second))
+
+    async def _service_for(self, handle: str) -> str:
+        """iMessage if they have it; otherwise SMS, which goes through your iPhone (Text Message Forwarding)."""
+        kind = "email" if "@" in handle else "phone"
+        answer = await self._request("check-imessage-availability", {"aliasType": kind, "address": handle})
+        if answer.get("available"):
+            return "iMessage"
+        if kind == "email":
+            raise ChatNotFound(f"{handle} isn't on iMessage, and email addresses can't get SMS")
+        return "SMS"
+
+    def _remember(self, sent: str | None, chat_guid: str) -> None:
         if sent:
             if len(self._chat_of) >= 1000:
                 self._chat_of.clear()
             self._chat_of[sent] = chat_guid
-        return sent
 
     async def reply(self, message: Message | str, text: str, *, chat: str | None = None) -> str:
         """Reply inline (threaded) to a message in an allowed chat: a Message, or a message GUID."""

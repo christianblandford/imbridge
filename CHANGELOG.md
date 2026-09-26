@@ -12,6 +12,18 @@
   `EditLimit` with `kind` `edit_window` (15 minutes), `edit_count` (5 edits) or `unsend_window` (2 minutes). The MCP
   server gains `edit_message` and `unsend_message`.
 - `Chat.participants` leaves out the address the program runs as, and keeps your other addresses.
+- Files: `chat.send_file(path, reply_to=...)`, `im.send_file(chat, path)` and `imbridge send-file` send photos, GIFs,
+  videos and documents, optionally as inline replies. Messages is sandboxed, so the file is first copied into
+  `~/Library/Messages/Attachments/imbridge/`, and that copy becomes the attachment.
+- New conversations: `im.send()` to an allowed phone number (with its country code) or email you have no conversation
+  with starts one, over iMessage if they have it and SMS otherwise. Allow someone new with
+  `allow=[NewContact("+15557654321")]` or `imbridge allow`, which asks you to confirm. Other `allow` entries must still
+  match a chat, so a typo fails at start, and local numbers are refused, so a missing country code can't reach a
+  stranger.
+- Messages can't be told which address a new conversation goes out from: iMessage uses its "Start new conversations
+  from" setting, and SMS the iPhone forwarding texts to this Mac. With `address=` set, imbridge refuses
+  (`WrongAddress`) to start one that would go out from another address; with none set, it refuses
+  (`AddressNotChosen`) to start one from a second phone number of yours.
 
 ## 0.2.0 (2026-09-26)
 

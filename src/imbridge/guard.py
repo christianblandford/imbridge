@@ -19,8 +19,27 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from . import config
+from .addresses import address_key, contact_address
 
 ANY_LINE = "*"  # in the allowed-chats file: every chat
+
+
+def one_to_one_handle(chat_guid: str) -> str | None:
+    """The other person's phone number or email in a one-to-one chat GUID ("any;-;+15551234567"), else None."""
+    service, kind, handle = (chat_guid.split(";", 2) + ["", ""])[:3]
+    return handle if kind == "-" and handle else None
+
+
+class NewContact(str):
+    """In IMBridge(allow=[...]), someone you have no conversation with yet, whom imbridge may start one with:
+    NewContact("+15557654321"). Every other entry has to match an existing chat, so a typo in one fails at start
+    instead of reaching a stranger."""
+
+    def __new__(cls, address: str) -> NewContact:
+        person = contact_address(address)
+        if person is None:
+            raise ValueError(f"{address!r} isn't a phone number with its country code (+15551234567) or an email")
+        return super().__new__(cls, person)
 
 
 class AnyChat:
@@ -75,25 +94,59 @@ class SendGuard:
         self._allow = [allow] if isinstance(allow, str) else allow  # one chat given on its own
         self._resolve = resolve  # turns a phone number, email or group name from `allow` into its chat GUID
         self._resolved: set[str] | None = None
+        self._handles: set[str] = set()  # people allowed in code that you haven't messaged yet (address keys)
         self.max_per_chat = max_per_chat
         self.max_total = max_total
         self.window = window
         self.clock = clock
 
     def resolve_allowed(self) -> set[str]:
-        """The chat GUIDs allowed in code; raises for an entry that matches no chat, so a typo fails at startup."""
+        """The chat GUIDs allowed in code. An entry that matches no chat raises, so a typo fails at startup, unless
+        it's a NewContact: someone to start a conversation with."""
         if self._resolved is None:
-            chats = () if isinstance(self._allow, AnyChat) else self._allow
-            self._resolved = {self._resolve(chat) for chat in chats}
+            resolved: set[str] = set()
+            for entry in () if isinstance(self._allow, AnyChat) else self._allow:
+                try:
+                    resolved.add(self._resolve(entry))
+                except LookupError:
+                    if not isinstance(entry, NewContact):
+                        raise
+                    self._handles.add(address_key(entry))
+            self._resolved = resolved
         return self._resolved
 
     def allows(self, chat_guid: str) -> bool:
         if isinstance(self._allow, AnyChat):
             return True
         listed = read_allowed()  # read every time, so `imbridge disallow` takes effect in running programs
-        if ANY_LINE in listed or chat_guid in listed:
+        if ANY_LINE in listed or chat_guid in listed or chat_guid in self.resolve_allowed():
             return True
-        return chat_guid in self.resolve_allowed()
+        handle = one_to_one_handle(chat_guid)  # a one-to-one chat started with someone allowed by number or email
+        return handle is not None and self._allows_person(handle, listed)
+
+    def allows_handle(self, handle: str) -> bool:
+        """Whether imbridge may start a conversation with this phone number or email."""
+        if isinstance(self._allow, AnyChat):
+            return True
+        listed = read_allowed()
+        return ANY_LINE in listed or self._allows_person(handle, listed)
+
+    def _allows_person(self, handle: str, listed: set[str]) -> bool:
+        key = address_key(handle)
+        chats = listed | self.resolve_allowed()  # which also collects self._handles
+        people = set(self._handles)
+        for entry in chats:
+            person = one_to_one_handle(entry) if ";" in entry else entry  # never a group: its GUID isn't a person
+            if person and (person_key := address_key(person)):
+                people.add(person_key)
+        return key is not None and key in people
+
+    def check_allowed_handle(self, handle: str) -> None:
+        if not self.allows_handle(handle):
+            raise SendNotAllowed(
+                f"imbridge isn't allowed to message {handle}. Allow them in your code with IMBridge(allow=[...]), "
+                f"or by running `imbridge allow {handle}` yourself (it asks you to confirm)."
+            )
 
     def check_allowed(self, chat_guid: str) -> None:
         if not self.allows(chat_guid):
