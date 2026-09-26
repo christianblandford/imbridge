@@ -63,7 +63,7 @@ class Message:
 
 
 @dataclass(frozen=True)
-class Chat:
+class ChatInfo:
     guid: str
     identifier: str | None  # the handle for one-to-one chats, chatNNN for groups
     name: str | None
@@ -106,13 +106,20 @@ class ChatDB:
         found = self._messages("c.guid = ? AND m.item_type = 0 ORDER BY m.ROWID DESC LIMIT ?", (chat_guid, limit))
         return found[::-1]
 
-    def chats(self, limit: int = 50) -> list[Chat]:
+    def chats(self, limit: int = 50) -> list[ChatInfo]:
         """Chats, most recently active first."""
+        return self._chats("ORDER BY last_date DESC LIMIT ?", (limit,))
+
+    def chat(self, guid: str) -> ChatInfo | None:
+        found = self._chats("WHERE c.guid = ? LIMIT 1", (guid,))
+        return found[0] if found else None
+
+    def _chats(self, clause: str, params: tuple) -> list[ChatInfo]:
         self._connect()
         rows = self._query(
-            f"SELECT c.ROWID AS rowid, c.guid, c.chat_identifier, c.display_name, c.service_name, c.style,"
-            f" {self._last_activity} AS last_date FROM chat c ORDER BY last_date DESC LIMIT ?",
-            (limit,),
+            "SELECT c.ROWID AS rowid, c.guid, c.chat_identifier, c.display_name, c.service_name, c.style,"
+            f" {self._last_activity} AS last_date FROM chat c {clause}",
+            params,
         )
         chats = []
         for row in rows:
@@ -124,7 +131,7 @@ class ChatDB:
                 )
             )
             chats.append(
-                Chat(
+                ChatInfo(
                     guid=row["guid"],
                     identifier=row["chat_identifier"],
                     name=row["display_name"] or None,

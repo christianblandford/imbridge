@@ -1,10 +1,11 @@
-"""ChatDB against a small database with the columns and joins of Messages' chat.db."""
+"""ChatDB and the Chat/IMBridge read and safety paths, against a small database shaped like Messages' chat.db."""
 
+import asyncio
 import sqlite3
 
 import pytest
 
-from imbridge import ChatNotFound, IMBridge
+from imbridge import ChatNotFound, IMBridge, SendNotAllowed, WrongChat
 from imbridge.chatdb import APPLE_EPOCH, ChatDB, FullDiskAccessError
 
 SCHEMA = """
@@ -126,3 +127,47 @@ def test_resolve_chat(chat_db):
 def test_unreadable_database(tmp_path):
     with pytest.raises(FullDiskAccessError):
         ChatDB(tmp_path / "missing.db").max_rowid()
+
+
+def bridge(chat_db, **kwargs) -> IMBridge:
+    return IMBridge(chat_db=chat_db, token="t", inject=False, poll_interval=0.01, **kwargs)
+
+
+def test_chat_handles(chat_db):
+    im = bridge(chat_db)
+    alex = im.chat("555-123-4567")
+    assert (alex.guid, alex.is_group, alex.can_send) == (ALEX, False, False)
+    assert [m.guid for m in alex.history()] == ["M1", "M2", "M3", "M4"]
+    crew = im.chat(CREW)
+    assert (crew.name, crew.is_group) == ("Crew", True)
+    assert [chat.guid for chat in im.chats()] == [CREW, ALEX]
+
+
+def test_chat_messages_stay_in_their_chat(chat_db):
+    async def first(count, stream):
+        return [await anext(stream) for _ in range(count)]
+
+    crew = bridge(chat_db).chat(CREW)
+    messages = asyncio.run(asyncio.wait_for(first(2, crew.messages(since=0)), 5))
+    assert [m.guid for m in messages] == ["M5", "M6"]
+
+
+def test_a_chat_refuses_messages_from_other_chats(chat_db):
+    im = bridge(chat_db, allow=[CREW])
+    crew = im.chat(CREW)
+    with pytest.raises(WrongChat):
+        asyncio.run(crew.react(im.message("M1"), "👍"))
+    with pytest.raises(WrongChat):
+        asyncio.run(crew.reply("M1", "hi"))
+
+
+def test_sending_needs_an_allowed_chat(chat_db):
+    im = bridge(chat_db, allow=[CREW])
+    with pytest.raises(SendNotAllowed):
+        asyncio.run(im.send("555-123-4567", "hi"))
+    with pytest.raises(SendNotAllowed):
+        asyncio.run(im.react("M1", "👍"))
+    with pytest.raises(SendNotAllowed):
+        asyncio.run(im.chat(ALEX).send("hi"))
+    assert not im.chat(ALEX).can_send
+    assert im.chat(CREW).can_send

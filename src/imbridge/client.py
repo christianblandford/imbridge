@@ -1,16 +1,18 @@
-"""The high-level API: send, reply, react with any emoji, and receive."""
+"""The high-level API: chats, sending (only where you've allowed it), tapbacks, and receiving."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from . import config, messages_app
-from .chatdb import Chat, ChatDB, Message
+from .chatdb import ChatDB, ChatInfo, Message
+from .guard import AnyChat, SendGuard
 from .protocol import HelperNotConnected, HelperServer, HelperUnauthorized
 from .reactions import parse_target, reaction_type
 
@@ -41,23 +43,116 @@ class ChatNotFound(LookupError):
     """No existing conversation matches the chat, phone number or email given."""
 
 
+class WrongChat(ValueError):
+    """A Chat was asked to reply or react to a message from another chat."""
+
+
+def _target_ref(guid: str, part: int) -> str:
+    return f"p:{part}/{guid}" if part else guid
+
+
+class Chat:
+    """One conversation. Everything done through it stays in it.
+
+        chat = im.chat("+15551234567")
+        async for message in chat.messages():  # only this chat's messages
+            await chat.reply(message, "on it")  # raises WrongChat for a message from any other chat
+
+    Reading always works. Sending needs the chat allowed (`imbridge allow`, or IMBridge(allow=[...])).
+    """
+
+    def __init__(self, bridge: IMBridge, info: ChatInfo) -> None:
+        self._bridge = bridge
+        self.info = info
+
+    @property
+    def guid(self) -> str:
+        return self.info.guid
+
+    @property
+    def name(self) -> str | None:
+        return self.info.name
+
+    @property
+    def is_group(self) -> bool:
+        return self.info.is_group
+
+    @property
+    def participants(self) -> tuple[str, ...]:
+        return self.info.participants
+
+    @property
+    def last_message_at(self) -> datetime | None:
+        return self.info.last_message_at
+
+    @property
+    def can_send(self) -> bool:
+        """Whether imbridge is allowed to send here."""
+        return self._bridge._guard.allows(self.guid)
+
+    def __repr__(self) -> str:
+        return f"Chat({self.name or ', '.join(self.participants) or self.guid!r})"
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.info.to_dict()
+
+    async def messages(self, *, since: int | None = None, include_from_me: bool = False) -> AsyncIterator[Message]:
+        """This chat's new messages, tapbacks and inline replies as they arrive (from now, or after a ROWID)."""
+        async for message in self._bridge._stream(since, include_from_me, self.guid):
+            yield message
+
+    def history(self, limit: int = 50) -> list[Message]:
+        """This chat's latest messages, oldest first."""
+        return self._bridge.db.history(self.guid, limit)
+
+    async def send(self, text: str, *, effect: str | None = None, subject: str | None = None) -> str:
+        return await self._bridge.send(self.guid, text, effect=effect, subject=subject)
+
+    async def reply(self, message: Message | str, text: str) -> str:
+        """Reply inline to one of this chat's messages (a Message or its GUID)."""
+        guid, part = await self._own(message)
+        return await self._bridge.send(self.guid, text, reply_to=_target_ref(guid, part))
+
+    async def react(self, message: Message | str, reaction: str, *, remove: bool = False) -> str:
+        """Tapback one of this chat's messages with a classic reaction or any emoji."""
+        guid, part = await self._own(message)
+        return await self._bridge._react(self.guid, guid, part, reaction, remove)
+
+    async def typing(self, on: bool = True) -> None:
+        await self._bridge.typing(self.guid, on)
+
+    async def mark_read(self) -> None:
+        await self._bridge.mark_read(self.guid)
+
+    async def _own(self, message: Message | str) -> tuple[str, int]:
+        guid, chat_guid, part = await self._bridge._target(message, None)
+        if chat_guid != self.guid:
+            raise WrongChat(f"message {guid} is in {chat_guid}, not in this chat ({self.guid})")
+        return guid, part
+
+
 class IMBridge:
-    """iMessage through Messages.app itself: the helper inside Messages sends, chat.db tells us what arrived.
+    """iMessage through Messages.app itself: a helper inside Messages sends, chat.db says what arrived.
+
+    imbridge only sends to chats you've allowed (with `imbridge allow`, or allow=[...] here) and rate-limits what it
+    sends, so a bug can't message your contacts. Reading works for every chat.
 
         async with IMBridge() as im:
-            guid = await im.send("+15551234567", "hi")
-            await im.react(guid, "👀")
-            async for message in im.messages():
-                if message.text:
-                    await im.reply(message, "got it")
+            chat = im.chat("+15551234567")
+            async for message in chat.messages():
+                await chat.reply(message, "got it")
 
-    With inject=True (the default), start() relaunches Messages with the helper loaded when no helper answers.
-    Receiving (messages, history, chats) reads chat.db only and works without the helper.
+    allow: extra chats (GUIDs, phone numbers or emails) this program may send to, or ANY_CHAT for every chat.
+    max_per_chat, max_total: messages and tapbacks per minute, per chat and in total, across all imbridge processes.
+    inject: load the helper into Messages (restarting Messages) when none answers.
     """
 
     def __init__(
         self,
         *,
+        allow: Iterable[str] | AnyChat = (),
+        max_per_chat: int = 10,
+        max_total: int = 30,
         port: int | None = None,
         token: str | None = None,
         dylib: Path | str | None = None,
@@ -69,6 +164,7 @@ class IMBridge:
         self.inject = inject
         self.poll_interval = poll_interval
         self.db = ChatDB(chat_db)
+        self._guard = SendGuard(allow, resolve=self.resolve_chat, max_per_chat=max_per_chat, max_total=max_total)
         self._server = HelperServer(port or config.helper_port(), token or config.helper_token())
         # The chat of each message we sent, so replies and tapbacks work before chat.db catches up.
         self._chat_of: dict[str, str] = {}
@@ -92,7 +188,26 @@ class IMBridge:
     def connected(self) -> bool:
         return self._server.connected
 
-    # --- sending -------------------------------------------------------------------------------------------------
+    # --- chats ---------------------------------------------------------------------------------------------------
+
+    def chat(self, chat: str) -> Chat:
+        """One conversation, by chat GUID or by the phone number / email of an existing one-to-one chat."""
+        guid = self.resolve_chat(chat)
+        return Chat(self, self.db.chat(guid) or ChatInfo(guid, None, None, None, False, (), None))
+
+    def chats(self, limit: int = 50) -> list[Chat]:
+        """Chats, most recently active first."""
+        return [Chat(self, info) for info in self.db.chats(limit)]
+
+    def resolve_chat(self, chat: str) -> str:
+        """A chat GUID as-is, or the chat GUID of the existing conversation with a phone number or email."""
+        if ";" in chat:
+            return chat
+        if guid := self.db.chat_for_handle(chat):
+            return guid
+        raise ChatNotFound(f"no existing conversation with {chat}; start one in Messages first")
+
+    # --- sending (allowed chats only) ----------------------------------------------------------------------------
 
     async def send(
         self,
@@ -103,13 +218,15 @@ class IMBridge:
         effect: str | None = None,
         subject: str | None = None,
     ) -> str:
-        """Send text to a chat (a chat GUID, or the phone number / email of an existing conversation).
+        """Send text to an allowed chat (a chat GUID, or the phone number / email of an existing conversation).
 
         Returns the new message's GUID. reply_to makes it an inline reply to that message GUID; effect is a key of
         EFFECTS (or a raw Messages effect identifier).
         """
-        guid, part = parse_target(reply_to) if reply_to else (None, 0)
         chat_guid = self.resolve_chat(chat)
+        self._guard.check_allowed(chat_guid)
+        self._guard.record_send(chat_guid)
+        guid, part = parse_target(reply_to) if reply_to else (None, 0)
         result = await self._request(
             "send-message",
             {
@@ -131,35 +248,30 @@ class IMBridge:
         return sent
 
     async def reply(self, message: Message | str, text: str, *, chat: str | None = None) -> str:
-        """Reply inline (threaded) to a message: a Message, or a message GUID."""
-        guid, chat_guid, _ = await self._target(message, chat)
-        return await self.send(chat_guid, text, reply_to=guid)
+        """Reply inline (threaded) to a message in an allowed chat: a Message, or a message GUID."""
+        guid, chat_guid, part = await self._target(message, chat)
+        return await self.send(chat_guid, text, reply_to=_target_ref(guid, part))
 
     async def react(
         self, message: Message | str, reaction: str, *, remove: bool = False, chat: str | None = None
     ) -> str:
-        """Tapback a message with a classic reaction (love, like, dislike, laugh, emphasize, question) or any emoji.
-
-        iMessage keeps one tapback per person per message, so a new one replaces your previous one.
+        """Tapback a message in an allowed chat: a classic reaction (love, like, dislike, laugh, emphasize, question)
+        or any emoji. iMessage keeps one tapback per person per message, so a new one replaces your previous one.
         """
         guid, chat_guid, part = await self._target(message, chat)
-        result = await self._request(
-            "send-reaction",
-            {
-                "chatGuid": chat_guid,
-                "selectedMessageGuid": guid,
-                "reactionType": reaction_type(reaction, remove),
-                "partIndex": part,
-            },
-        )
-        return result.get("identifier")
+        return await self._react(chat_guid, guid, part, reaction, remove)
 
     async def typing(self, chat: str, on: bool = True) -> None:
-        """Show (or stop showing) the typing indicator in a chat."""
-        await self._request("start-typing" if on else "stop-typing", {"chatGuid": self.resolve_chat(chat)})
+        """Show (or stop showing) the typing indicator in an allowed chat."""
+        chat_guid = self.resolve_chat(chat)
+        self._guard.check_allowed(chat_guid)
+        await self._request("start-typing" if on else "stop-typing", {"chatGuid": chat_guid})
 
     async def mark_read(self, chat: str) -> None:
-        await self._request("mark-chat-read", {"chatGuid": self.resolve_chat(chat)})
+        """Mark an allowed chat as read (the other side sees a read receipt if you send them)."""
+        chat_guid = self.resolve_chat(chat)
+        self._guard.check_allowed(chat_guid)
+        await self._request("mark-chat-read", {"chatGuid": chat_guid})
 
     async def account(self) -> dict[str, Any]:
         """The signed-in account (apple_id, login_status_message, aliases, ...); also proves the helper answers."""
@@ -168,11 +280,26 @@ class IMBridge:
 
     # --- receiving -----------------------------------------------------------------------------------------------
 
-    async def messages(self, *, since: int | None = None, include_from_me: bool = False) -> AsyncIterator[Message]:
-        """New messages as they arrive, tapbacks and inline replies included.
+    async def all_messages(self, *, since: int | None = None, include_from_me: bool = False) -> AsyncIterator[Message]:
+        """New messages from every chat as they arrive, tapbacks and inline replies included.
 
-        Starts from now, or after the given chat.db ROWID. Your own messages are skipped unless include_from_me.
+        For a bot that answers in one conversation, use chat.messages() instead. Starts from now, or after the given
+        chat.db ROWID; your own messages are skipped unless include_from_me.
         """
+        async for message in self._stream(since, include_from_me, None):
+            yield message
+
+    def history(self, chat: str, limit: int = 50) -> list[Message]:
+        """A chat's latest messages, oldest first."""
+        return self.db.history(self.resolve_chat(chat), limit)
+
+    def message(self, guid: str) -> Message | None:
+        """One message by GUID (a "p:N/GUID" tapback target works too), or None."""
+        return self.db.message(parse_target(guid)[0])
+
+    # --- internals -----------------------------------------------------------------------------------------------
+
+    async def _stream(self, since: int | None, include_from_me: bool, chat_guid: str | None) -> AsyncIterator[Message]:
         last = since if since is not None else await asyncio.to_thread(self.db.max_rowid)
         first_seen: dict[int, float] = {}
         while True:
@@ -188,32 +315,22 @@ class IMBridge:
                         break
                 first_seen.pop(message.rowid, None)
                 last = message.rowid
+                if chat_guid is not None and message.chat_guid != chat_guid:
+                    continue
                 if include_from_me or not message.is_from_me:
                     yield message
             if waiting or not batch:
                 await asyncio.sleep(self.poll_interval)
 
-    def history(self, chat: str, limit: int = 50) -> list[Message]:
-        """A chat's latest messages, oldest first."""
-        return self.db.history(self.resolve_chat(chat), limit)
-
-    def chats(self, limit: int = 50) -> list[Chat]:
-        """Chats, most recently active first."""
-        return self.db.chats(limit)
-
-    def message(self, guid: str) -> Message | None:
-        """One message by GUID (a "p:N/GUID" tapback target works too), or None."""
-        return self.db.message(parse_target(guid)[0])
-
-    def resolve_chat(self, chat: str) -> str:
-        """A chat GUID as-is, or the chat GUID of the existing conversation with a phone number or email."""
-        if ";" in chat:
-            return chat
-        if guid := self.db.chat_for_handle(chat):
-            return guid
-        raise ChatNotFound(f"no existing conversation with {chat}; start one in Messages first")
-
-    # --- internals -----------------------------------------------------------------------------------------------
+    async def _react(self, chat_guid: str, guid: str, part: int, reaction: str, remove: bool) -> str:
+        kind = reaction_type(reaction, remove)
+        self._guard.check_allowed(chat_guid)
+        self._guard.record_send(chat_guid)
+        result = await self._request(
+            "send-reaction",
+            {"chatGuid": chat_guid, "selectedMessageGuid": guid, "reactionType": kind, "partIndex": part},
+        )
+        return result.get("identifier")
 
     async def _target(self, message: Message | str, chat: str | None) -> tuple[str, str, int]:
         if isinstance(message, Message):

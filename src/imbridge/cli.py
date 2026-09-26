@@ -1,4 +1,4 @@
-"""The imbridge command: doctor, start, send, reply, react, chats, history, watch."""
+"""The imbridge command: doctor, start, allow, send, reply, react, chats, history, watch."""
 
 from __future__ import annotations
 
@@ -9,8 +9,9 @@ import sys
 
 from . import __version__
 from .chatdb import FullDiskAccessError, Message
-from .client import EFFECTS, ChatNotFound, IMBridge
+from .client import EFFECTS, Chat, ChatNotFound, IMBridge, WrongChat
 from .doctor import run_checks
+from .guard import ANY_LINE, RateLimited, SendNotAllowed, read_allowed, write_allowed
 from .protocol import HelperError
 from .reactions import CLASSIC_TAPBACKS
 
@@ -31,6 +32,10 @@ def describe(message: Message) -> str:
     return f"[{when}] {who} in {where}: {body}  <{message.guid}>"
 
 
+def _label(chat: Chat) -> str:
+    return chat.name or ", ".join(chat.participants) or chat.guid
+
+
 def _print_message(message: Message, as_json: bool) -> None:
     print(json.dumps(message.to_dict(), ensure_ascii=False) if as_json else describe(message), flush=True)
 
@@ -43,6 +48,68 @@ def _doctor() -> int:
         if check.fix and check.ok is not True:
             print(f"    {'fix' if check.ok is False else 'next'}: {check.fix}")
     return 1 if any(check.ok is False for check in checks) else 0
+
+
+def _allow(args: argparse.Namespace) -> int:
+    # Widening who imbridge may message takes a person at a terminal, so no script or AI agent can do it on its own.
+    if not sys.stdin.isatty():
+        print(
+            "imbridge: `imbridge allow` must be run by a person in a terminal (it asks you to confirm), so that no "
+            "script or AI agent can widen who imbridge may message.",
+            file=sys.stderr,
+        )
+        return 1
+    allowed = read_allowed()
+    if args.any:
+        print("This lets imbridge send to ANY chat: every contact and every group. Only the rate limits still apply.")
+        if input('Type "any chat" to confirm: ').strip().lower() != "any chat":
+            print("Nothing changed.")
+            return 1
+        allowed.add(ANY_LINE)
+        write_allowed(allowed)
+        print("imbridge may now send to any chat. Undo it with `imbridge disallow --any`.")
+        return 0
+    if not args.chat:
+        print("imbridge: name a chat (GUID, phone number or email), or use --any", file=sys.stderr)
+        return 2
+    chat = IMBridge(inject=False).chat(args.chat)
+    members = f" ({', '.join(chat.participants)})" if chat.is_group and chat.participants else ""
+    answer = input(f"Let imbridge send to {_label(chat)}{members}, chat {chat.guid}? [y/N] ")
+    if answer.strip().lower() not in ("y", "yes"):
+        print("Nothing changed.")
+        return 1
+    allowed.add(chat.guid)
+    write_allowed(allowed)
+    print(f"imbridge may now send to {_label(chat)}.")
+    return 0
+
+
+def _disallow(args: argparse.Namespace) -> int:
+    allowed = read_allowed()
+    target = ANY_LINE if args.any else (IMBridge(inject=False).resolve_chat(args.chat) if args.chat else None)
+    if target is None:
+        print("imbridge: name a chat, or use --any", file=sys.stderr)
+        return 2
+    if target not in allowed:
+        print("That chat wasn't allowed; nothing changed.")
+        return 0
+    allowed.discard(target)
+    write_allowed(allowed)
+    print("Done: imbridge may no longer send there." if target != ANY_LINE else "Done: 'any chat' is off.")
+    return 0
+
+
+def _allowed() -> int:
+    allowed = read_allowed()
+    if not allowed:
+        print("imbridge may not send anywhere yet (read-only). Allow a chat with `imbridge allow <chat>`.")
+        return 0
+    if ANY_LINE in allowed:
+        print("* any chat (imbridge allow --any)")
+    im = IMBridge(inject=False)
+    for guid in sorted(allowed - {ANY_LINE}):
+        print(f"{guid}  {_label(im.chat(guid))}")
+    return 0
 
 
 async def _start() -> int:
@@ -67,7 +134,8 @@ async def _send(args: argparse.Namespace) -> int:
 
 async def _watch(args: argparse.Namespace) -> int:
     im = IMBridge(inject=False)
-    async for message in im.messages(include_from_me=args.from_me):
+    stream = im.chat(args.chat).messages if args.chat else im.all_messages
+    async for message in stream(include_from_me=args.from_me):
         _print_message(message, args.json)
     return 0
 
@@ -82,17 +150,25 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("doctor", help="check that this Mac is set up for imbridge")
     commands.add_parser("start", help="load the helper into Messages (restarting it, hidden) and wait until it answers")
 
-    send = commands.add_parser("send", help="send a message")
+    allow = commands.add_parser("allow", help="let imbridge send to a chat (asks you to confirm)")
+    allow.add_argument("chat", nargs="?", help="chat GUID, or the phone number / email of an existing conversation")
+    allow.add_argument("--any", action="store_true", help="every chat (asks you to type a confirmation)")
+    disallow = commands.add_parser("disallow", help="stop imbridge sending to a chat")
+    disallow.add_argument("chat", nargs="?")
+    disallow.add_argument("--any", action="store_true", help="turn off 'any chat'")
+    commands.add_parser("allowed", help="list the chats imbridge may send to")
+
+    send = commands.add_parser("send", help="send a message to an allowed chat")
     send.add_argument("chat", help="chat GUID, or the phone number / email of an existing conversation")
     send.add_argument("text")
     send.add_argument("--reply-to", metavar="GUID", help="send it as an inline reply to this message")
     send.add_argument("--effect", choices=sorted(EFFECTS), help="bubble or screen effect")
 
-    reply = commands.add_parser("reply", help="reply inline to a message")
+    reply = commands.add_parser("reply", help="reply inline to a message in an allowed chat")
     reply.add_argument("message", metavar="GUID")
     reply.add_argument("text")
 
-    react = commands.add_parser("react", help="tapback a message: a classic reaction or any emoji")
+    react = commands.add_parser("react", help="tapback a message in an allowed chat: a classic reaction or any emoji")
     react.add_argument("message", metavar="GUID")
     react.add_argument("reaction", help=f"{', '.join(CLASSIC_TAPBACKS)}, or any emoji")
     react.add_argument("--remove", action="store_true", help="take the tapback away")
@@ -107,6 +183,7 @@ def _parser() -> argparse.ArgumentParser:
     history.add_argument("--json", action="store_true", help="one JSON object per line")
 
     watch = commands.add_parser("watch", help="print new messages, tapbacks and replies as they arrive")
+    watch.add_argument("--chat", help="only this chat")
     watch.add_argument("--json", action="store_true", help="one JSON object per line")
     watch.add_argument("--from-me", action="store_true", help="include messages you send")
     return parser
@@ -117,6 +194,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "doctor":
             return _doctor()
+        if args.command == "allow":
+            return _allow(args)
+        if args.command == "disallow":
+            return _disallow(args)
+        if args.command == "allowed":
+            return _allowed()
         if args.command == "start":
             return asyncio.run(_start())
         if args.command in ("send", "reply", "react"):
@@ -127,18 +210,27 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "chats":
             for chat in im.chats(args.n):
                 if args.json:
-                    print(json.dumps(chat.to_dict(), ensure_ascii=False))
+                    print(json.dumps({**chat.to_dict(), "can_send": chat.can_send}, ensure_ascii=False))
                 else:
-                    label = chat.name or ", ".join(chat.participants) or chat.identifier
                     when = chat.last_message_at.astimezone().strftime("%Y-%m-%d %H:%M") if chat.last_message_at else "-"
-                    print(f"{chat.guid}  {label}  ({when})")
+                    marker = "  [can send]" if chat.can_send else ""
+                    print(f"{chat.guid}  {_label(chat)}  ({when}){marker}")
         else:  # history
             for message in im.history(args.chat, args.n):
                 _print_message(message, args.json)
         return 0
     except KeyboardInterrupt:
         return 130
-    except (FullDiskAccessError, ChatNotFound, HelperError, TimeoutError, asyncio.TimeoutError) as e:
+    except (
+        FullDiskAccessError,
+        ChatNotFound,
+        WrongChat,
+        SendNotAllowed,
+        RateLimited,
+        HelperError,
+        TimeoutError,
+        asyncio.TimeoutError,
+    ) as e:
         print(f"imbridge: {e or type(e).__name__}", file=sys.stderr)
         if isinstance(e, (TimeoutError, asyncio.TimeoutError)):
             print("imbridge: the helper didn't answer; run `imbridge doctor`", file=sys.stderr)

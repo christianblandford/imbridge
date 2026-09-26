@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import config, messages_app
 from .chatdb import ChatDB, FullDiskAccessError
+from .guard import ANY_LINE, read_allowed
 
 PRIVATE_FRAMEWORKS = ("IMCore", "IMSharedUtilities", "IMDPersistence", "IDS", "FMF")
 BOOT_ARG = "-arm64e_preview_abi"
@@ -120,4 +121,14 @@ def run_checks(dylib: Path | None = None) -> list[Check]:
                   f"Messages (pid {pid}) {'has' if loaded else 'is running without'} the helper",
                   "" if loaded else "imbridge start")
         )
+
+    allowed = read_allowed()
+    if ANY_LINE in allowed:
+        checks.append(Check("Chats imbridge may send to", None, "any chat (rate limits still apply)",
+                            "imbridge disallow --any"))
+    elif allowed:
+        checks.append(Check("Chats imbridge may send to", True, f"{len(allowed)} (see `imbridge allowed`)"))
+    else:
+        checks.append(Check("Chats imbridge may send to", None, "none yet, so imbridge is read-only",
+                            "imbridge allow <chat>"))
     return checks

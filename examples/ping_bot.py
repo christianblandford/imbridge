@@ -1,8 +1,9 @@
-"""A tiny bot: in one chat you choose, answer "ping" with a 🏓 tapback and an inline "pong".
+"""A tiny bot: in the one chat you name, answer "ping" with a 🏓 tapback and an inline "pong".
 
-    python examples/ping_bot.py +15551234567      # or a chat GUID from `imbridge chats`
+    imbridge allow +15551234567            # once, in your own terminal
+    python examples/ping_bot.py +15551234567
 
-It ignores every other chat, so it's safe to leave running while you try things.
+It only ever reads and answers in that chat.
 """
 
 import asyncio
@@ -11,16 +12,16 @@ import sys
 from imbridge import IMBridge
 
 
-async def main(chat: str) -> None:
+async def main(target: str) -> None:
     async with IMBridge() as im:
-        chat_guid = im.resolve_chat(chat)
-        print(f"listening in {chat_guid}; send it 'ping'")
-        async for message in im.messages():
-            if message.chat_guid != chat_guid or message.reaction or not message.text:
-                continue
-            if message.text.strip().lower() == "ping":
-                await im.react(message, "🏓")
-                await im.reply(message, "pong")
+        chat = im.chat(target)
+        if not chat.can_send:
+            sys.exit(f"imbridge may not send to {chat.guid} yet; run `imbridge allow {target}` first")
+        print(f"listening in {chat!r}; send it 'ping'")
+        async for message in chat.messages():
+            if message.text and not message.reaction and message.text.strip().lower() == "ping":
+                await chat.react(message, "🏓")
+                await chat.reply(message, "pong")
 
 
 if __name__ == "__main__":
