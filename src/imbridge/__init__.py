@@ -6,6 +6,7 @@ from .addresses import ANY_ADDRESS, AddressNotChosen, WrongAddress
 from .chatdb import Attachment, ChatDB, ChatInfo, FullDiskAccessError, GroupEvent, Message
 from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, WrongChat
 from .guard import ANY_CHAT, NewContact, RateLimited, SendNotAllowed
+from .polls import Poll, PollOption, PollResults, PollVote
 from .protocol import HelperError, HelperNotConnected, HelperUnauthorized
 from .reactions import CLASSIC_TAPBACKS, Reaction
 
@@ -35,6 +36,10 @@ __all__ = [
     "IMBridge",
     "Message",
     "NewContact",
+    "Poll",
+    "PollOption",
+    "PollResults",
+    "PollVote",
     "RateLimited",
     "Reaction",
     "SendNotAllowed",

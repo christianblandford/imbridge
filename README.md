@@ -208,6 +208,7 @@ async with IMBridge(allow=["+15551234567"]) as im:
     await im.send("+15557654321", "hi")                   # allowed as NewContact("+15557654321"): starts a chat
     im.chats(20)                                          # recent chats, newest first; each has .can_send
     im.message(guid)                                      # one message, or None
+    im.poll(guid)                                         # a poll's options, votes and question (from any of its messages)
     async for message in im.all_messages():               # every chat: be deliberate about who you answer
         ...
 ```
@@ -244,6 +245,8 @@ Every `Message` has these fields:
 | `edited_at`, `edit_count` | set once it's been edited; `text` is then the edited text |
 | `unsent_at` | set once its sender took it back; `text` is then `None` |
 | `mentions` | the phone numbers and emails it @mentions; `im.mentions_me(message)` checks for this program's address |
+| `poll` | set when the message is a poll (or an update adding a choice to one): `options` (each with `id` and `text`), `creator`, `session`, `update_of` |
+| `vote` | set when the message is a vote in a poll: `poll_guid` and `options`, the voter's whole current choice (empty when they took it back) |
 | `event` | set when the row is a change to a group rather than a message (streams and history include these with `include_events=True`): `kind` (`added`, `removed`, `left`, `renamed`, `photo_changed`, `photo_removed`, `other`), `person` (who was added, removed or left; `None` is you), `name` (for `renamed`) and `code`. `sender` is who made the change. |
 | `address` | which of your addresses it was sent to (or, for your own messages, sent from) |
 
@@ -267,6 +270,12 @@ each with `edited_at` or `unsent_at` set, and `im.message(guid)` always reads th
 an unsend clears the text and marks the message only inside `message_summary_info`; imbridge reads both that and the
 older `date_retracted` column.
 
+**Polls.** A poll arrives as a message with `poll` set, and each vote as a message with `vote` set. `im.poll(message)`
+(or `chat.poll`) puts them together: the current options, everyone's current choice (`choices`, with `None` for
+you), `counts()`, `voters(option)`, and the question. Messages never shows a poll's title; the question is the message
+its creator sent right after it, which imbridge finds for you. Messages also sends a plain "Sent a poll" with every
+poll for devices that can't show polls. It doesn't display that, and neither do imbridge's streams and history.
+
 **Effects:** `slam`, `loud`, `gentle`, `invisible_ink`, `echo`, `spotlight`, `balloons`, `confetti`, `love`, `lasers`,
 `fireworks`, `celebration`, `shooting_star`.
 
@@ -287,6 +296,7 @@ imbridge reply GUID "inline reply"
 imbridge react GUID 🔥 [--remove]
 imbridge chats [-n 20] [--json]
 imbridge history +15551234567 [-n 20] [--json]
+imbridge poll GUID [--json]                          # a poll's question, options and votes
 imbridge watch [--chat CHAT] [--json] [--from-me] [--events]   # stream new messages; --json: one object per line
 imbridge mcp [--address ADDRESS]                     # the MCP server, over stdio (pip install "imbridge[mcp]")
 imbridge <command> --address +15550002222           # start, the sends, history, watch and mcp take it
@@ -318,6 +328,7 @@ itself.
 | `list_chats` | recent chats, and whether the agent may send in each (`can_send`) |
 | `read_messages` | a chat's latest messages |
 | `check_messages` | messages since the last check; `wait_seconds` waits for a reply |
+| `read_poll` | a poll's question, options and votes |
 | `send_message` | a new message, optionally with an effect; or a new conversation with someone the user allowed |
 | `reply` | an inline reply to a message |
 | `react` | a tapback with any emoji or a classic |

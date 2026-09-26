@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 (unreleased)
+
+- Polls, read: a poll arrives as a message with `poll` (its options, creator and session) and each vote as one with
+  `vote` (the voter's whole current choice). `im.poll(message)` and `chat.poll(message)` give a `PollResults`: current
+  options including added choices, each voter's latest choice, `counts()`, `voters(option)`, and the question the
+  creator sent with it. `imbridge poll GUID` and the MCP server's `read_poll` show the same.
+- The plain "Sent a poll" Messages sends with every poll, for devices without polls, is left out of streams and history
+  as Messages leaves it out of the conversation.
+
 ## 0.3.0 (2026-09-26)
 
 - Edits and unsends, read: `Message.edited_at`, `Message.edit_count` and `Message.unsent_at`, and `im.message(guid)`

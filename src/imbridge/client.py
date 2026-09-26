@@ -28,6 +28,7 @@ from .addresses import (
 )
 from .chatdb import APPLE_EPOCH, ChatDB, ChatInfo, Message
 from .guard import AnyChat, SendGuard
+from .polls import PollResults
 from .protocol import HelperError, HelperNotConnected, HelperServer, HelperUnauthorized
 from .reactions import parse_target, reaction_label, reaction_type
 
@@ -200,6 +201,13 @@ class Chat:
         """This chat's messages as they're edited or unsent, from now on (see IMBridge.changes)."""
         async for message in self._bridge._changes(self.guid, include_from_me):
             yield message
+
+    def poll(self, message: Message | str) -> PollResults | None:
+        """The current state of a poll in this chat: see IMBridge.poll."""
+        results = self._bridge.poll(message)
+        if results is not None and results.chat_guid != self.guid:
+            raise WrongChat(f"poll {results.guid} is in {results.chat_guid}, not in this chat ({self.guid})")
+        return results
 
     async def _own(self, message: Message | str) -> tuple[str, int]:
         guid, chat_guid, part = await self._bridge._target(message, None)
@@ -609,6 +617,18 @@ class IMBridge:
     def message(self, guid: str) -> Message | None:
         """One message by GUID (a "p:N/GUID" tapback target works too), or None."""
         return self.db.message(parse_target(guid)[0])
+
+    def poll(self, message: Message | str) -> PollResults | None:
+        """A poll's current state: its options, everyone's current choice, and the question sent with it.
+
+        Takes the poll's message, an update of it, or a vote in it (a Message or its GUID); None for anything else.
+        """
+        guid = message.guid if isinstance(message, Message) else parse_target(message)[0]
+        self._check_address()
+        found = self.db.message(guid)
+        if found is None or not self._admits(found, strict=False):
+            return None
+        return self.db.poll(guid)
 
     # --- which of your addresses this program is -----------------------------------------------------------------
 

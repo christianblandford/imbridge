@@ -13,6 +13,7 @@ from .chatdb import FullDiskAccessError, Message
 from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, WrongChat
 from .doctor import run_checks
 from .guard import ANY_LINE, RateLimited, SendNotAllowed, read_allowed, write_allowed
+from .polls import PollResults
 from .protocol import HelperError
 from .reactions import CLASSIC_TAPBACKS
 
@@ -38,6 +39,11 @@ def describe(message: Message) -> str:
         if event.kind == "renamed" and not event.name:
             template = "removed the group's name"
         body = template.format(person=event.person or "me", name=f'"{event.name}"', code="/".join(map(str, event.code)))
+    elif poll := message.poll:
+        verb = "added a choice to a poll" if poll.update_of else "sent a poll"
+        body = f"{verb}: {' / '.join(option.text for option in poll.options)}"
+    elif vote := message.vote:
+        body = f"{'voted' if vote.options else 'took back their vote'} in poll {vote.poll_guid}"
     elif reaction := message.reaction:
         body = f"{'removed ' if reaction.removed else ''}{reaction.label} on {reaction.target_guid}"
     else:
@@ -48,6 +54,16 @@ def describe(message: Message) -> str:
         if message.reply_to:
             body = f"(reply to {message.reply_to}) {body}"
     return f"[{when}] {who} in {where}: {body}  <{message.guid}>"
+
+
+def _print_poll(results: PollResults, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(results.to_dict(), ensure_ascii=False))
+        return
+    print(results.question or "(a poll with no question)")
+    for option in results.to_dict()["options"]:
+        voters = f"  ({', '.join(option['voters'])})" if option["voters"] else ""
+        print(f"  {option['votes']:>3}  {option['text']}{voters}")
 
 
 def _label(chat: Chat) -> str:
@@ -244,6 +260,10 @@ def _parser() -> argparse.ArgumentParser:
     chats.add_argument("-n", type=int, default=20, help="how many (default 20)")
     chats.add_argument("--json", action="store_true", help="one JSON object per line")
 
+    poll = commands.add_parser("poll", parents=[mine], help="show a poll's options, votes and question")
+    poll.add_argument("message", metavar="GUID", help="the poll's message, or a vote in it")
+    poll.add_argument("--json", action="store_true", help="as a JSON object")
+
     history = commands.add_parser("history", parents=[mine], help="show a chat's latest messages")
     history.add_argument("chat", help="phone number, email, group name, or chat GUID")
     history.add_argument("-n", type=int, default=20, help="how many (default 20)")
@@ -287,6 +307,12 @@ def main(argv: list[str] | None = None) -> int:
                     when = chat.last_message_at.astimezone().strftime("%Y-%m-%d %H:%M") if chat.last_message_at else "-"
                     marker = "  [can send]" if chat.can_send else ""
                     print(f"{chat.guid}  {_label(chat)}  ({when}){marker}")
+        elif args.command == "poll":
+            results = im.poll(args.message)
+            if results is None:
+                print(f"imbridge: {args.message} isn't a poll or a vote in one", file=sys.stderr)
+                return 1
+            _print_poll(results, args.json)
         else:  # history
             for message in im.history(args.chat, args.n):
                 _print_message(message, args.json)

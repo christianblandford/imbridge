@@ -33,6 +33,8 @@ These tools read and send iMessages on the user's Mac, through Messages.app.
 - You can only send in chats the user has allowed; list_chats shows which (can_send). Only the user can allow a chat,
   from their own terminal. If a send is refused, tell the user why instead of looking for another way to send.
 - Messages go to real people and can't be taken back, so be sure before you send.
+- A poll arrives as a message with `poll` (its options), and a vote as one with `vote`; read_poll shows the current
+  tally and the question sent with the poll.
 """
 
 READS = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -59,6 +61,12 @@ def _message(message: Message) -> dict[str, Any]:
         item["reply_to"] = message.reply_to
     if message.mentions:
         item["mentions"] = list(message.mentions)
+    if poll := message.poll:
+        item["poll"] = {"options": [option.text for option in poll.options]}
+        if poll.update_of:
+            item["poll"]["adds_a_choice_to"] = poll.update_of
+    if vote := message.vote:
+        item["vote"] = {"in_poll": vote.poll_guid, "took_back": not vote.options}
     if reaction := message.reaction:
         item["tapback"] = {"reaction": reaction.label, "removed": reaction.removed, "on": reaction.target_guid}
     if message.attachments:
@@ -146,6 +154,18 @@ def build_server(im: IMBridge) -> MCPServer:
             return [_message(message) for message in found]
         except Exception as error:
             raise _refusal(error) from error
+
+    @server.tool(annotations=READS)
+    def read_poll(message_guid: str) -> dict[str, Any]:
+        """A poll's question, options, and votes per option with who cast them ("me" is the user). Takes the poll's
+        message guid, or a vote's."""
+        try:
+            results = im.poll(message_guid)
+        except Exception as error:
+            raise _refusal(error) from error
+        if results is None:
+            raise ToolError(f"{message_guid} isn't a poll or a vote in one.")
+        return results.to_dict()
 
     @server.tool(
         annotations=SENDS,

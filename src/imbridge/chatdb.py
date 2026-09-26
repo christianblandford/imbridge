@@ -17,6 +17,7 @@ from typing import Any
 
 from .addresses import address_key, display_address
 from .config import CHAT_DB
+from .polls import POLL_TYPES, POLLS_BUNDLE, Poll, PollOption, PollResults, PollVote, fallback_text, parse_poll
 from .reactions import Reaction, parse_reaction
 from .typedstream import attributed_body_mentions, attributed_body_text
 
@@ -76,6 +77,8 @@ class Message:
     unsent_at: datetime | None = None  # when its sender took it back (unsent); text is then None
     mentions: tuple[str, ...] = ()  # the phone numbers and emails it @mentions
     event: GroupEvent | None = None  # set when this row records a change to a group rather than a message
+    poll: Poll | None = None  # set when this message is a poll, or an update adding a choice to one
+    vote: PollVote | None = None  # set when this message is a vote in a poll
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -112,6 +115,7 @@ class ChatDB:
         self._edited = "0"  # message.date_edited, likewise
         self._retracted = "0"  # message.date_retracted, likewise
         self._message_address = "NULL"  # message.destination_caller_id, likewise
+        self._has_polls = False  # message.balloon_bundle_id and payload_data, likewise
 
     def close(self) -> None:
         if self._db is not None:
@@ -126,7 +130,7 @@ class ChatDB:
         return self._messages(f"m.ROWID > ? AND {_kinds(events)} ORDER BY m.ROWID LIMIT ?", (rowid, limit))
 
     def message_at(self, rowid: int) -> Message | None:
-        found = self._messages("m.ROWID = ?", (rowid,))
+        found = self._messages("m.ROWID = ?", (rowid,), fallbacks=True)
         return found[0] if found else None
 
     def recent_floor(self, seconds: float) -> int:
@@ -143,13 +147,62 @@ class ChatDB:
         return [(row[0], row[1] or 0, row[2] or 0, row[3] or 0) for row in rows]
 
     def message(self, guid: str) -> Message | None:
-        found = self._messages("m.guid = ?", (guid,))
+        found = self._messages("m.guid = ?", (guid,), fallbacks=True)
         return found[0] if found else None
 
     def history(self, chat_guid: str, limit: int = 50, *, events: bool = False) -> list[Message]:
         """The chat's latest messages, oldest first; with events, group changes too."""
         found = self._messages(f"c.guid = ? AND {_kinds(events)} ORDER BY m.ROWID DESC LIMIT ?", (chat_guid, limit))
         return found[::-1]
+
+    def poll(self, guid: str) -> PollResults | None:
+        """The current state of a poll, from the poll's GUID, an update's, or a vote's."""
+        found = self.message(guid)
+        item = found and (found.poll or found.vote)
+        if item is None or not self._has_polls:
+            return None
+        where, params = "m.balloon_bundle_id = ?", [POLLS_BUNDLE]
+        if found.chat_guid:
+            where, params = where + " AND c.guid = ?", [*params, found.chat_guid]
+        rows = [m for m in self._messages(f"{where} ORDER BY m.date, m.ROWID", tuple(params)) if m.poll or m.vote]
+        polls = [m for m in rows if m.poll and m.poll.session == item.session]
+        if not polls:
+            return None
+        options: dict[str, PollOption] = {}
+        for message in polls:  # each update lists every option; keep them all, in the newest order
+            newest = {option.id: option for option in message.poll.options}
+            options = newest | {key: option for key, option in options.items() if key not in newest}
+        choices: dict[str | None, tuple[str, ...]] = {}
+        for message in rows:
+            if message.vote and message.vote.session == item.session:
+                voter = None if message.is_from_me else message.sender
+                if message.vote.options:
+                    choices[voter] = message.vote.options
+                else:
+                    choices.pop(voter, None)  # they took their vote back
+        first = polls[0]
+        return PollResults(
+            guid=first.guid,
+            chat_guid=first.chat_guid,
+            session=item.session,
+            creator=first.sender,
+            question=self._poll_question(first),
+            options=tuple(options.values()),
+            choices=choices,
+        )
+
+    def _poll_question(self, poll: Message) -> str | None:
+        """What the poll's sender typed with it: Messages sends it as its own message, right after the poll."""
+        if poll.date is None or not poll.chat_guid:
+            return None
+        at = int((poll.date.timestamp() - APPLE_EPOCH) * 1e9)
+        after = self._messages(
+            "c.guid = ? AND m.item_type = 0 AND m.balloon_bundle_id IS NULL AND m.associated_message_type = 0"
+            " AND m.date BETWEEN ? AND ? ORDER BY m.date LIMIT 5",
+            (poll.chat_guid, at - 1_000_000, at + 5_000_000_000),
+        )
+        sent = [m for m in after if m.is_from_me == poll.is_from_me and m.sender == poll.sender and m.text]
+        return sent[0].text if sent else None
 
     def chats(self, limit: int = 50) -> list[ChatInfo]:
         """Chats, most recently active first."""
@@ -254,7 +307,8 @@ class ChatDB:
                 ) from e
             if not message_columns:
                 raise FullDiskAccessError(f"{self.path} has no message table (is this Messages' chat.db?)")
-            self._select = _message_select(message_columns, chat_columns)
+            self._select = _message_select(message_columns, chat_columns, join_columns)
+            self._has_polls = {"balloon_bundle_id", "payload_data"} <= message_columns
             if "last_addressed_handle" in chat_columns:
                 self._chat_address = "c.last_addressed_handle"
             if "destination_caller_id" in message_columns:
@@ -284,7 +338,7 @@ class ChatDB:
                     raise
         return []
 
-    def _messages(self, where: str, params: tuple) -> list[Message]:
+    def _messages(self, where: str, params: tuple, *, fallbacks: bool = False) -> list[Message]:
         self._connect()
         rows = self._query(f"{self._select} WHERE {where}", params)
         attachments = self._attachments([row["rowid"] for row in rows if row["cache_has_attachments"]])
@@ -294,6 +348,11 @@ class ChatDB:
             text = (text or "").replace("￼", "").strip() or None  # U+FFFC stands in for attachments
             event = _event(row)
             address = row["destination_caller_id"] or (row["chat_address"] if event else None)  # some events lack it
+            poll = parse_poll(row["associated_message_type"], row["associated_message_guid"], row["poll_payload"])
+            if poll is not None:
+                text = None  # a placeholder, or the fallback text
+            elif row["poll_before"] and text and text == fallback_text(row["poll_before"]) and not fallbacks:
+                continue  # the "Sent a poll" Messages sends along with a poll, and doesn't show
             messages.append(
                 Message(
                     rowid=row["rowid"],
@@ -315,6 +374,8 @@ class ChatDB:
                     attachments=attachments.get(row["rowid"], ()),
                     mentions=tuple(map(display_address, attributed_body_mentions(row["attributedBody"]))),
                     event=event,
+                    poll=poll if isinstance(poll, Poll) else None,
+                    vote=poll if isinstance(poll, PollVote) else None,
                 )
             )
         return messages
@@ -341,18 +402,33 @@ def _kinds(events: bool) -> str:
     return f"m.item_type IN (0, {', '.join(map(str, EVENT_TYPES))})" if events else "m.item_type = 0"
 
 
-def _message_select(columns: set[str], chat_columns: set[str]) -> str:
+def _message_select(columns: set[str], chat_columns: set[str], join_columns: set[str]) -> str:
     # Older macOS versions lack some of these columns; select NULL in their place.
     def column(name: str) -> str:
         return f"m.{name}" if name in columns else f"NULL AS {name}"
 
     others = "other_handle" in columns
+    if {"balloon_bundle_id", "payload_data"} <= columns:
+        # A poll's payload, and for a plain message, the payload of a poll its sender sent just before it: Messages
+        # follows each poll with a plain "Sent a poll" that it doesn't show (see polls.py).
+        when = "pj.message_date" if "message_date" in join_columns else "p.date"
+        polls = (
+            f"CASE WHEN m.balloon_bundle_id = '{POLLS_BUNDLE}' THEN m.payload_data END AS poll_payload,"
+            " CASE WHEN m.balloon_bundle_id IS NULL AND m.item_type = 0 AND m.associated_message_type = 0 THEN"
+            " (SELECT p.payload_data FROM chat_message_join pj JOIN message p ON p.ROWID = pj.message_id"
+            f" WHERE pj.chat_id = cmj.chat_id AND p.balloon_bundle_id = '{POLLS_BUNDLE}'"
+            f" AND p.associated_message_type IN ({', '.join(map(str, POLL_TYPES))})"
+            f" AND p.is_from_me = m.is_from_me AND p.handle_id = m.handle_id"
+            f" AND {when} BETWEEN m.date - 3000000000 AND m.date ORDER BY {when} DESC LIMIT 1) END AS poll_before,"
+        )
+    else:
+        polls = "NULL AS poll_payload, NULL AS poll_before,"
     return (
         "SELECT m.ROWID AS rowid, m.guid, m.text, m.attributedBody, m.is_from_me, m.date, m.service,"
         f" m.cache_has_attachments, {column('associated_message_guid')}, {column('associated_message_type')},"
         f" {column('associated_message_emoji')}, {column('thread_originator_guid')}, {column('destination_caller_id')},"
         f" {column('date_edited')}, {column('date_retracted')}, {column('message_summary_info')},"
-        f" {column('item_type')}, {column('group_action_type')}, {column('group_title')},"
+        f" {column('item_type')}, {column('group_action_type')}, {column('group_title')}, {polls}"
         f" {'oh.id' if others else 'NULL'} AS other_handle_id,"
         f" {'c.last_addressed_handle' if 'last_addressed_handle' in chat_columns else 'NULL'} AS chat_address,"
         " h.id AS sender, c.guid AS chat_guid, c.display_name AS chat_name, c.style AS chat_style"
