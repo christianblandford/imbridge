@@ -6,6 +6,7 @@ from .addresses import ANY_ADDRESS, AddressNotChosen, WrongAddress
 from .chatdb import Attachment, ChatDB, ChatInfo, FullDiskAccessError, GroupEvent, Message
 from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, SendLaterFailed, WrongChat
 from .guard import ANY_CHAT, NewContact, RateLimited, SendNotAllowed
+from .links import LinkPreview
 from .locations import Location
 from .polls import Poll, PollOption, PollResults, PollVote
 from .protocol import HelperBusy, HelperError, HelperNotConnected, HelperUnauthorized
@@ -37,6 +38,7 @@ __all__ = [
     "HelperNotConnected",
     "HelperUnauthorized",
     "IMBridge",
+    "LinkPreview",
     "Location",
     "Message",
     "NewContact",

@@ -71,6 +71,8 @@ def _message(message: Message) -> dict[str, Any]:
             item["poll"]["adds_a_choice_to"] = poll.update_of
     if vote := message.vote:
         item["vote"] = {"in_poll": vote.poll_guid, "took_back": not vote.options}
+    if link := message.link:
+        item["link"] = {"url": link.url, "title": link.title, "summary": link.summary, "site": link.site_name}
     if place := message.location:
         item["location"] = {"latitude": place.latitude, "longitude": place.longitude, "name": place.name,
                             "address": place.address}

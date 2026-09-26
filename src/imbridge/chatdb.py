@@ -17,6 +17,7 @@ from typing import Any
 
 from .addresses import address_key, display_address, same_address
 from .config import CHAT_DB
+from .links import URL_BALLOON, LinkPreview, parse_link
 from .locations import Location, is_pin, read_pin
 from .polls import POLL_TYPES, POLLS_BUNDLE, Poll, PollOption, PollResults, PollVote, fallback_text, parse_poll
 from .reactions import Reaction, parse_reaction
@@ -83,6 +84,7 @@ class Message:
     vote: PollVote | None = None  # set when this message is a vote in a poll
     scheduled_for: datetime | None = None  # for your own message waiting in Send Later: when it goes out
     location: Location | None = None  # set when the message is a location pin (and its file is still on disk)
+    link: LinkPreview | None = None  # set when the message is a link with a preview: its title, summary and site
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -410,6 +412,7 @@ class ChatDB:
                     **_changes(row),
                     attachments=attachments.get(row["rowid"], ()),
                     location=_location(attachments.get(row["rowid"], ())),
+                    link=parse_link(row["link_payload"]),
                     mentions=tuple(map(display_address, attributed_body_mentions(row["attributedBody"]))),
                     event=event,
                     poll=poll if isinstance(poll, Poll) else None,
@@ -454,6 +457,7 @@ def _message_select(columns: set[str], chat_columns: set[str], join_columns: set
         when = "pj.message_date" if "message_date" in join_columns else "p.date"
         polls = (
             f"CASE WHEN m.balloon_bundle_id = '{POLLS_BUNDLE}' THEN m.payload_data END AS poll_payload,"
+            f" CASE WHEN m.balloon_bundle_id = '{URL_BALLOON}' THEN m.payload_data END AS link_payload,"
             " CASE WHEN m.balloon_bundle_id IS NULL AND m.item_type = 0 AND m.associated_message_type = 0 THEN"
             " (SELECT p.payload_data FROM chat_message_join pj JOIN message p ON p.ROWID = pj.message_id"
             f" WHERE pj.chat_id = cmj.chat_id AND p.balloon_bundle_id = '{POLLS_BUNDLE}'"
@@ -462,7 +466,7 @@ def _message_select(columns: set[str], chat_columns: set[str], join_columns: set
             f" AND {when} BETWEEN m.date - 3000000000 AND m.date ORDER BY {when} DESC LIMIT 1) END AS poll_before,"
         )
     else:
-        polls = "NULL AS poll_payload, NULL AS poll_before,"
+        polls = "NULL AS poll_payload, NULL AS link_payload, NULL AS poll_before,"
     return (
         "SELECT m.ROWID AS rowid, m.guid, m.text, m.attributedBody, m.is_from_me, m.date, m.service,"
         f" m.cache_has_attachments, {column('associated_message_guid')}, {column('associated_message_type')},"

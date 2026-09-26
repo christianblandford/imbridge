@@ -295,6 +295,7 @@ Every `Message` has these fields:
 | `edited_at`, `edit_count` | set once it's been edited; `text` is then the edited text |
 | `unsent_at` | set once its sender took it back; `text` is then `None` |
 | `scheduled_for` | for your own message waiting in Send Later: when it goes out |
+| `link` | set when the message is a link with a preview: `url`, `title`, `summary`, `site_name` and `original_url` |
 | `location` | set when the message is a location pin: `latitude`, `longitude`, `name`, `address` and the Maps `url` |
 | `mentions` | the phone numbers and emails it @mentions; `im.mentions_me(message)` checks for this program's address |
 | `poll` | set when the message is a poll (or an update adding a choice to one): `options` (each with `id` and `text`), `creator`, `session`, `update_of` |

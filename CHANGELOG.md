@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Link previews, read: a link sent with a preview arrives with `Message.link` (a `LinkPreview`: url, title, summary,
+  site name, original url), read from the archived RichLink Messages stores with it.
+
 ## 0.5.0 (2026-09-26)
 
 - Retrying safely: `send()`, `reply()` and `send_file()` (and a new conversation's first message) take a `guid` you

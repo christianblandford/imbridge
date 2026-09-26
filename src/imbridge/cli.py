@@ -41,6 +41,8 @@ def describe(message: Message) -> str:
         if event.kind == "renamed" and not event.name:
             template = "removed the group's name"
         body = template.format(person=event.person or "me", name=f'"{event.name}"', code="/".join(map(str, event.code)))
+    elif (link := message.link) and link.title:
+        body = f"{message.text or link.url}  🔗 {link.title}" + (f" ({link.site_name})" if link.site_name else "")
     elif place := message.location:
         body = f"📍 {place.name or 'a pin'} ({place.latitude:.5f}, {place.longitude:.5f})"
     elif poll := message.poll:
