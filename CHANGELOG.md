@@ -8,6 +8,13 @@
   creator sent with it. `imbridge poll GUID` and the MCP server's `read_poll` show the same.
 - The plain "Sent a poll" Messages sends with every poll, for devices without polls, is left out of streams and history
   as Messages leaves it out of the conversation.
+- Polls, sent: `chat.send_poll(options, question=...)` sends a poll and then its question as a message, as Messages
+  does. `chat.vote(poll, *options)` and `chat.unvote(poll, *options)` vote the way tapping does in Messages: each vote
+  carries your whole current choice under the poll's own session, so other choices stay (sending only the new one, or
+  a fresh session, is what makes other tools' votes replace choices or go uncounted). Votes that change nothing aren't
+  sent. `imbridge send-poll`, `imbridge vote`, and the MCP tools `send_poll` and `vote` do the same, all through the
+  allowlist, address and rate-limit checks.
+- The helper gains `send-poll` and `send-poll-vote` (helper/patches/0005-polls.patch).
 
 ## 0.3.0 (2026-09-26)
 

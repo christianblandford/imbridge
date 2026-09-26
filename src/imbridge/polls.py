@@ -70,6 +70,7 @@ class PollResults:
     question: str | None  # what the creator sent along with the poll, usually its question; None if nothing
     options: tuple[PollOption, ...]  # every option, including ones added later
     choices: dict[str | None, tuple[str, ...]] = field(default_factory=dict)  # voter (None: you) -> option ids
+    latest: str = ""  # the newest message of the poll itself (after any added choices): what votes are cast on
 
     def voters(self, option: str) -> tuple[str | None, ...]:
         """Who currently picks an option (by id or text); None stands for you."""

@@ -1,0 +1,187 @@
+imbridge polls (macOS 26+): send-poll {chatGuid, options, creatorHandle} sends a poll (an iMessage app balloon whose
+options travel as base64 JSON in a data: URL inside an archived payload, with the live layout that makes it votable)
+and replies with its GUID, sessionIdentifier and optionIdentifiers. send-poll-vote {chatGuid, pollGuid,
+sessionIdentifier, participantHandle, optionIdentifiers} casts a vote as a custom acknowledgement of the poll
+(associated type 4000) carrying the voter's whole current choice under the poll's own session identifier, after
+paging the poll in so IMCore doesn't file the vote elsewhere. Both validate their input and catch exceptions, so bad
+input can't crash Messages.
+
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+index a77c615..9e82b59 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
++++ b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+@@ -9,6 +9,7 @@
+ @import AppKit;
+ 
+ #import <Foundation/Foundation.h>
++#import <objc/message.h>
+ #import <CoreSpotlight/CoreSpotlight.h>
+ #import "BlueBubblesHelper.h"
+ 
+@@ -91,6 +92,146 @@ - (void)editMessageItem:(id)arg1 atPartIndex:(long)arg2 withNewPartText:(id)arg3
+ //}
+ 
+ 
++// imbridge: polls (macOS 26+). A poll is an iMessage app balloon whose options travel as base64 JSON in a data: URL
++// inside an archived payload. A vote is a "custom acknowledgement" of the poll message (associated type 4000) carrying
++// the voter's whole current choice under the poll's own session identifier; Messages ignores votes with any other.
++static NSString *const IMBPollsBundle =
++    @"com.apple.messages.MSMessageExtensionBalloonPlugin:0000000000:com.apple.messages.Polls";
++
++static void IMBReply(NSString *transaction, NSDictionary *reply) {
++    if (transaction != nil) {
++        NSMutableDictionary *message = [reply mutableCopy];
++        message[@"transactionId"] = transaction;
++        [[NetworkController sharedInstance] sendMessage:message];
++    }
++}
++
++static BOOL IMBStrings(id value, NSUInteger minimum) {
++    if (![value isKindOfClass:[NSArray class]] || [value count] < minimum) {
++        return NO;
++    }
++    for (id item in value) {
++        if (![item isKindOfClass:[NSString class]] || [item length] == 0) {
++            return NO;
++        }
++    }
++    return YES;
++}
++
++static NSData *IMBArchived(id object) {
++    return [NSKeyedArchiver archivedDataWithRootObject:object requiringSecureCoding:NO error:nil];
++}
++
++static NSURL *IMBPollURL(NSDictionary *item, NSString *query) {
++    NSData *json = [NSJSONSerialization dataWithJSONObject:@{@"version": @1, @"item": item} options:0 error:nil];
++    if (json == nil) {
++        return nil;
++    }
++    NSString *encoded = [json base64EncodedStringWithOptions:0];
++    return [NSURL URLWithString:[NSString stringWithFormat:@"data:,%@%@", encoded, query]];
++}
++
++// Sends a poll offering these options; replies with its GUID, session identifier and option identifiers.
++static void IMBSendPoll(IMChat *chat, id options, id creator, NSString *transaction) {
++    if (!IMBStrings(options, 2) || ![creator isKindOfClass:[NSString class]] || [creator length] == 0) {
++        IMBReply(transaction, @{@"error": @"A poll needs at least two options and a creatorHandle"});
++        return;
++    }
++    @try {
++        NSMutableArray *ordered = [NSMutableArray array];
++        NSMutableArray *identifiers = [NSMutableArray array];
++        for (NSString *text in options) {
++            NSString *identifier = [[NSUUID UUID] UUIDString];
++            [identifiers addObject:identifier];
++            [ordered addObject:@{@"optionIdentifier": identifier, @"text": text, @"attributedText": text,
++                                 @"creatorHandle": creator, @"canBeEdited": @NO}];
++        }
++        NSString *query = [NSString stringWithFormat:@"?src=p&c=%lu", (unsigned long)[ordered count]];
++        NSURL *url = IMBPollURL(@{@"title": @"", @"creatorHandle": creator, @"orderedPollOptions": ordered}, query);
++        NSData *liveLayout = IMBArchived(@{@"layoutClass": @"MSMessageLiveLayout", @"userInfo": @{}});  // votable
++        NSData *capabilities = IMBArchived(@[@"supports-polls"]);
++        NSUUID *session = [NSUUID UUID];
++        if (url == nil || liveLayout == nil || capabilities == nil) {
++            IMBReply(transaction, @{@"error": @"Couldn't build the poll"});
++            return;
++        }
++        NSData *payload = IMBArchived(@{
++            @"URL": url, @"sessionIdentifier": session, @"an": @"Polls", @"ldtext": @"Sent a poll",
++            @"layoutClass": @"MSMessageTemplateLayout", @"liveLayoutInfo": liveLayout,
++            @"requiredCapabilities": capabilities, @"sendAsText": @YES,
++            @"userInfo": @{@"caption": @"Sent a poll", @"subcaption": @"", @"secondary-subcaption": @"",
++                           @"tertiary-subcaption": @"", @"image-title": @"", @"image-subtitle": @""},
++        });
++        NSAttributedString *body = [[NSAttributedString alloc]
++            initWithString:[NSString stringWithFormat:@"%C", (unichar)0xFFFD]
++                attributes:@{@"__kIMMessagePartAttributeName": @0,
++                             @"__kIMBreadcrumbTextMarkerAttributeName": @"Sent a poll",
++                             @"__kIMBreadcrumbTextOptionFlags": @0}];
++        IMMessage *poll = [[IMMessage alloc] initWithSender:nil time:nil text:body messageSubject:nil
++                                          fileTransferGUIDs:@[] flags:0x100005 error:nil guid:nil subject:nil
++                                            balloonBundleID:IMBPollsBundle payloadData:payload
++                                      expressiveSendStyleID:nil];
++        [chat sendMessage:poll];
++        NSString *guid = [poll guid] ?: [[chat lastSentMessage] guid];
++        IMBReply(transaction, @{@"identifier": guid ?: @"", @"sessionIdentifier": [session UUIDString],
++                                @"optionIdentifiers": identifiers});
++    } @catch (NSException *exception) {
++        IMBReply(transaction, @{@"error": [NSString stringWithFormat:@"Couldn't send the poll: %@", exception.reason]});
++    }
++}
++
++// Votes in a poll: the voter's whole current choice (an empty one takes their vote back), cast on the poll message
++// or its latest update, under the poll's own session identifier.
++static void IMBSendPollVote(IMChat *chat, id pollGuid, id sessionIdentifier, id voter, id choice,
++                            NSString *transaction) {
++    NSUUID *session = [sessionIdentifier isKindOfClass:[NSString class]]
++        ? [[NSUUID alloc] initWithUUIDString:sessionIdentifier] : nil;
++    if (session == nil || ![pollGuid isKindOfClass:[NSString class]] || [pollGuid length] == 0
++            || ![voter isKindOfClass:[NSString class]] || [voter length] == 0 || !IMBStrings(choice, 0)) {
++        IMBReply(transaction, @{@"error": @"A vote needs pollGuid, sessionIdentifier, participantHandle and optionIdentifiers"});
++        return;
++    }
++    SEL factory = NSSelectorFromString(@"customAcknowledgementMessageWithPayloadData:associatedMessageGUID:"
++                                       "balloonBundleID:messageSummaryInfo:threadIdentifier:");
++    SEL setType = NSSelectorFromString(@"_associatedMessageType:");
++    if (![IMMessage respondsToSelector:factory] || ![IMMessage instancesRespondToSelector:setType]) {
++        IMBReply(transaction, @{@"error": @"This macOS can't vote in polls"});
++        return;
++    }
++    @try {
++        NSMutableArray *votes = [NSMutableArray array];
++        for (NSString *option in choice) {
++            [votes addObject:@{@"voteOptionIdentifier": option, @"participantHandle": voter}];
++        }
++        NSURL *url = IMBPollURL(@{@"votes": votes}, @"");
++        if (url == nil) {
++            IMBReply(transaction, @{@"error": @"Couldn't build the vote"});
++            return;
++        }
++        // IMCore only looks for the poll among loaded messages; without it, the vote can land in another chat
++        SEL load = NSSelectorFromString(@"loadMessagesBeforeAndAfterGUID:numberOfMessagesToLoadBeforeGUID:"
++                                        "numberOfMessagesToLoadAfterGUID:loadImmediately:threadIdentifier:");
++        if ([chat respondsToSelector:load]) {
++            ((id (*)(id, SEL, id, unsigned long long, unsigned long long, BOOL, id))objc_msgSend)(
++                chat, load, pollGuid, 5, 5, YES, nil);
++        }
++        NSData *payload = IMBArchived(@{@"URL": url, @"an": @"Polls", @"sessionIdentifier": session});
++        NSDictionary *summary = @{@"amc": @9, @"amd": @"Polls", @"ams": @"Sent a vote", @"amb": IMBPollsBundle};
++        IMMessage *vote = ((id (*)(id, SEL, id, id, id, id, id))objc_msgSend)(
++            [IMMessage class], factory, payload, pollGuid, IMBPollsBundle, summary, nil);
++        if (vote == nil) {
++            IMBReply(transaction, @{@"error": @"Couldn't build the vote"});
++            return;
++        }
++        ((void (*)(id, SEL, long long))objc_msgSend)(vote, setType, 4000);
++        [chat sendMessage:vote];
++        IMBReply(transaction, @{@"identifier": [vote guid] ?: @""});
++    } @catch (NSException *exception) {
++        IMBReply(transaction, @{@"error": [NSString stringWithFormat:@"Couldn't vote: %@", exception.reason]});
++    }
++}
++
++
+ @implementation BlueBubblesHelper
+ 
+ static os_log_t logger;
+@@ -471,6 +612,19 @@ -(void) handleServerEvent: (NSString*)event data: (NSDictionary*)data transactio
+                 [[NetworkController sharedInstance] sendMessage: @{@"transactionId": transaction}];
+             }
+         }
++    // imbridge: send a poll
++    } else if ([event isEqualToString:@"send-poll"]) {
++        IMChat *chat = [[BlueBubblesHelper sharedInstance] getIMChatFromGuid:data[@"chatGuid"] transaction:transaction];
++        if (chat != nil) {
++            IMBSendPoll(chat, data[@"options"], data[@"creatorHandle"], transaction);
++        }
++    // imbridge: vote in a poll
++    } else if ([event isEqualToString:@"send-poll-vote"]) {
++        IMChat *chat = [[BlueBubblesHelper sharedInstance] getIMChatFromGuid:data[@"chatGuid"] transaction:transaction];
++        if (chat != nil) {
++            IMBSendPollVote(chat, data[@"pollGuid"], data[@"sessionIdentifier"], data[@"participantHandle"],
++                            data[@"optionIdentifiers"], transaction);
++        }
+     // If the server tells us to send a single attachment
+     } else if ([event isEqualToString:@"send-attachment"]) {
+         NSString *filePath = data[@"filePath"];

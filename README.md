@@ -42,8 +42,8 @@ claude mcp add imessage -- imbridge mcp   # then: "text Alex that I'm running la
   limits stop runaway loops, and with two numbers on one Apple ID it only answers on the one you choose.
 - **Any-emoji tapbacks.** The classic six plus any emoji, as iOS 18 and macOS 15 allow. BlueBubbles' released helper
   and imsg can only send the classic six.
-- **Real iMessage features.** Inline replies, tapbacks, photos and files, edits and unsends, message effects, typing
-  indicators and read receipts, done by Messages itself rather than by scripting its UI.
+- **Real iMessage features.** Inline replies, tapbacks, polls, photos and files, edits and unsends, message effects,
+  typing indicators and read receipts, done by Messages itself rather than by scripting its UI.
 - **Current.** Tested on macOS 27. It fixes a macOS 26+ crash in BlueBubbles' helper when it replies or reacts while
   someone is typing.
 
@@ -192,6 +192,8 @@ async with IMBridge(allow=["+15551234567"]) as im:
     await chat.react(guid, "🔥", remove=True)
     await chat.send_file("chart.png")                     # a photo, GIF, video or document
     await chat.send_file("chart.png", reply_to=guid)      # ...as an inline reply
+    poll = await chat.send_poll(["Pizza", "Sushi"], question="Lunch?")
+    await chat.vote(poll, "Pizza")                        # keeps your other choices; chat.unvote(poll, "Pizza")
     await chat.typing()                                   # typing indicator on; chat.typing(False) turns it off
     await chat.edit(guid, "fixed a typo")                 # your own messages: up to 5 edits, within 15 minutes
     await chat.unsend(guid)                               # within 2 minutes
@@ -276,6 +278,12 @@ you), `counts()`, `voters(option)`, and the question. Messages never shows a pol
 its creator sent right after it, which imbridge finds for you. Messages also sends a plain "Sent a poll" with every
 poll for devices that can't show polls. It doesn't display that, and neither do imbridge's streams and history.
 
+`send_poll(options, question=...)` sends a poll and then its question, like Messages; both count toward the rate
+limits and are checked before either goes out. A vote carries your whole current choice, so `vote(poll, "Pizza")`
+adds Pizza to what you picked before and `unvote(poll, "Pizza")` takes it back (`unvote(poll)` takes back
+everything). Options can be given by text or id, and a vote that wouldn't change anything isn't sent. Polls need
+iOS 26 or macOS 26 or later on the other end.
+
 **Effects:** `slam`, `loud`, `gentle`, `invisible_ink`, `echo`, `spotlight`, `balloons`, `confetti`, `love`, `lasers`,
 `fireworks`, `celebration`, `shooting_star`.
 
@@ -292,6 +300,8 @@ imbridge disallow CHAT | --any
 imbridge allowed
 imbridge send +15551234567 "hello" [--reply-to GUID] [--effect confetti]   # someone new: starts a conversation
 imbridge send-file +15551234567 photo.jpg [--reply-to GUID]
+imbridge send-poll +15551234567 Pizza Sushi [--question "Lunch?"]
+imbridge vote GUID Pizza [--remove]                  # the poll's GUID; keeps your other choices
 imbridge reply GUID "inline reply"
 imbridge react GUID 🔥 [--remove]
 imbridge chats [-n 20] [--json]
@@ -302,7 +312,7 @@ imbridge mcp [--address ADDRESS]                     # the MCP server, over stdi
 imbridge <command> --address +15550002222           # start, the sends, history, watch and mcp take it
 ```
 
-`send`, `send-file`, `reply` and `react` print the new message's GUID. They follow the same allowlist and rate limits as the
+`send`, `send-file`, `send-poll`, `vote`, `reply` and `react` print the new message's GUID. They follow the same allowlist and rate limits as the
 library.
 
 ## Using it with an AI agent
@@ -332,6 +342,7 @@ itself.
 | `send_message` | a new message, optionally with an effect; or a new conversation with someone the user allowed |
 | `reply` | an inline reply to a message |
 | `react` | a tapback with any emoji or a classic |
+| `send_poll`, `vote` | send a poll (and its question), or vote in one |
 | `edit_message`, `unsend_message` | change or take back a message it sent, within iMessage's limits |
 | `show_typing` | the typing indicator |
 | `whoami` | the address it answers on and the chats it may send to |

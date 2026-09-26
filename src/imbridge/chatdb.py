@@ -10,6 +10,7 @@ import plistlib
 import re
 import sqlite3
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -155,8 +156,9 @@ class ChatDB:
         found = self._messages(f"c.guid = ? AND {_kinds(events)} ORDER BY m.ROWID DESC LIMIT ?", (chat_guid, limit))
         return found[::-1]
 
-    def poll(self, guid: str) -> PollResults | None:
-        """The current state of a poll, from the poll's GUID, an update's, or a vote's."""
+    def poll(self, guid: str, *, mine: Iterable[str] = ()) -> PollResults | None:
+        """The current state of a poll, from the poll's GUID, an update's, or a vote's. Votes sent from any address
+        in `mine` (address_key form) are yours, like the ones marked as from you."""
         found = self.message(guid)
         item = found and (found.poll or found.vote)
         if item is None or not self._has_polls:
@@ -175,7 +177,7 @@ class ChatDB:
         choices: dict[str | None, tuple[str, ...]] = {}
         for message in rows:
             if message.vote and message.vote.session == item.session:
-                voter = None if message.is_from_me else message.sender
+                voter = None if message.is_from_me or address_key(message.sender) in mine else message.sender
                 if message.vote.options:
                     choices[voter] = message.vote.options
                 else:
@@ -189,6 +191,7 @@ class ChatDB:
             question=self._poll_question(first),
             options=tuple(options.values()),
             choices=choices,
+            latest=polls[-1].guid,
         )
 
     def _poll_question(self, poll: Message) -> str | None:

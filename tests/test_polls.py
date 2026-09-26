@@ -9,8 +9,9 @@ import uuid
 
 import pytest
 from helpers import ALEX, CREW, at
+from test_sending import actions, run
 
-from imbridge import IMBridge, PollOption, PollVote, WrongChat
+from imbridge import IMBridge, PollOption, PollVote, RateLimited, SendNotAllowed, WrongChat
 from imbridge.chatdb import ChatDB
 from imbridge.cli import describe
 from imbridge.polls import POLLS_BUNDLE, parse_poll
@@ -145,3 +146,98 @@ def test_unreadable_payloads_are_not_polls():
     assert parse_poll(0, None, b"not a plist") is None
     assert parse_poll(0, None, None) is None
     assert parse_poll(1000, None, payload({"title": "", "orderedPollOptions": []})) is None  # not a poll row type
+
+
+# --- sending polls and voting, against a stand-in for the helper --------------------------------------------------
+
+def on_my_number(path):
+    """Say which of your addresses the fixture's chats are on, as chat.db does: polls and votes name you by it."""
+    db = sqlite3.connect(path)
+    db.execute("ALTER TABLE chat ADD COLUMN last_addressed_handle TEXT")
+    db.execute("UPDATE chat SET last_addressed_handle = '+15550002222'")
+    db.commit()
+    db.close()
+    return path
+
+
+CREATED = {"send-poll": {"sessionIdentifier": SESSION, "optionIdentifiers": [PIZZA, SUSHI]}}
+
+
+def test_sending_a_poll(chat_db):
+    guid, requests = run(
+        on_my_number(chat_db), lambda im: im.chat(CREW).send_poll(["Pizza", " Sushi "], question="Lunch?"), CREATED,
+        allow=[CREW],
+    )
+    assert actions(requests) == ["send-poll", "send-message"]  # the question follows the poll, as Messages sends it
+    poll = requests[0]["data"]
+    assert (poll["chatGuid"], poll["options"], poll["creatorHandle"]) == (CREW, ["Pizza", "Sushi"], "+15550002222")
+    assert requests[1]["data"]["message"] == "Lunch?"
+    assert guid == "SENT-1"
+
+
+def test_a_poll_and_its_question_are_rate_limited_together(chat_db):
+    log = []
+    with pytest.raises(RateLimited):
+        run(on_my_number(chat_db), lambda im: im.send_poll(CREW, ["a", "b"], question="?"), CREATED, log,
+            allow=[CREW], max_per_chat=1)
+    assert log == []  # refused before either went out
+
+
+def test_polls_need_options_and_an_allowed_chat(chat_db):
+    path = on_my_number(chat_db)
+    long = [letter * 900 for letter in "abcde"]
+    for options, problem in [(["only one"], "at least two"), (["Tea", "tea"], "different"), (long, "too long")]:
+        log = []
+        with pytest.raises(ValueError, match=problem):
+            run(path, lambda im, options=options: im.send_poll(CREW, options), None, log, allow=[CREW])
+        assert log == []
+    with pytest.raises(SendNotAllowed):
+        run(path, lambda im: im.send_poll(CREW, ["a", "b"]))
+
+
+def test_votes_carry_your_whole_choice(chat_db):
+    path = on_my_number(with_poll(chat_db))  # you already picked Tacos (V3)
+
+    def vote(scenario):
+        result, requests = run(path, scenario, allow=[CREW])
+        return result, [request["data"] for request in requests]
+
+    _, (sent,) = vote(lambda im: im.vote("P1", "pizza"))  # by text, any case
+    assert sent["optionIdentifiers"] == [TACOS, PIZZA]  # your earlier choice stays, as tapping does in Messages
+    assert (sent["pollGuid"], sent["sessionIdentifier"], sent["participantHandle"]) == ("U1", SESSION, "+15550002222")
+    _, (sent,) = vote(lambda im: im.unvote("V2", TACOS))  # from a vote in the poll, by id
+    assert sent["optionIdentifiers"] == []
+    _, (sent,) = vote(lambda im: im.chat(CREW).unvote("P1"))  # everything
+    assert sent["optionIdentifiers"] == []
+    assert vote(lambda im: im.vote("P1", "Tacos")) == (None, [])  # already chosen: nothing to send
+    assert vote(lambda im: im.unvote("P1", "Pizza")) == (None, [])  # never chosen
+    with pytest.raises(ValueError, match="'Nachos' isn't an option in this poll; it has 'Pizza', 'Sushi', 'Tacos'"):
+        vote(lambda im: im.vote("P1", "Nachos"))
+
+
+def test_votes_stay_in_their_chat(chat_db):
+    path = on_my_number(with_poll(chat_db))
+    log = []
+    with pytest.raises(WrongChat):
+        run(path, lambda im: im.chat(ALEX).vote("P1", "Pizza"), None, log, allow=[ALEX, CREW])
+    with pytest.raises(SendNotAllowed):  # a poll in a chat that isn't allowed
+        run(path, lambda im: im.vote("P1", "Pizza"), None, log, allow=[ALEX])
+    assert log == []
+
+
+def test_your_votes_from_another_of_your_addresses_count_once(chat_db):
+    # in a chat with yourself, each vote comes back as a received copy from your own number
+    path = on_my_number(with_poll(chat_db))
+    db = sqlite3.connect(path)
+    db.execute("INSERT INTO handle (id) VALUES ('+15550002222')")
+    rowid = db.execute(
+        "INSERT INTO message (guid, text, handle_id, is_from_me, date, service, balloon_bundle_id, payload_data,"
+        " associated_message_type, associated_message_guid)"
+        " VALUES ('ECHO', ' ', 3, 0, ?, 'iMessage', ?, ?, 4000, 'U1')",
+        (at(18), POLLS_BUNDLE, payload(votes("+15550002222", TACOS))),
+    ).lastrowid
+    db.execute("INSERT INTO chat_message_join VALUES (2, ?, ?)", (rowid, at(18)))
+    db.commit()
+    db.close()
+    results = IMBridge(chat_db=path, token="t", inject=False).poll("P1")
+    assert results.choices == {"sam@example.com": (SUSHI,), None: (TACOS,)}

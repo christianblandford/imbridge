@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -42,6 +43,7 @@ ECHO_WINDOW = 60.0
 EDIT_WINDOW, MAX_EDITS, UNSEND_WINDOW = 15 * 60, 5, 2 * 60
 # So only recent messages can change; the changes stream watches this far back.
 CHANGE_WINDOW = EDIT_WINDOW + 5 * 60
+MAX_POLL_BYTES = 4096  # a poll's options, as Messages encodes them, must fit in this
 
 
 @dataclass
@@ -85,6 +87,26 @@ class EditLimit(RuntimeError):
 
 class WrongChat(ValueError):
     """A Chat was asked to reply or react to a message from another chat."""
+
+
+def _poll_size(options: list[str], creator: str) -> int:
+    """The size of a poll as the helper encodes it (see polls.py), option identifiers included."""
+    listed = [
+        {"optionIdentifier": "0" * 36, "text": o, "attributedText": o, "creatorHandle": creator, "canBeEdited": False}
+        for o in options
+    ]
+    item = {"title": "", "creatorHandle": creator, "orderedPollOptions": listed}
+    return len(json.dumps({"version": 1, "item": item}, ensure_ascii=False, separators=(",", ":")).encode())
+
+
+def _option_id(results: PollResults, option: str) -> str:
+    """A poll option's id, from its id or its text (ignoring case)."""
+    wanted = option.strip().casefold()
+    for candidate in results.options:
+        if option == candidate.id or wanted == candidate.text.strip().casefold():
+            return candidate.id
+    texts = ", ".join(repr(candidate.text) for candidate in results.options)
+    raise ValueError(f"{option!r} isn't an option in this poll; it has {texts}")
 
 
 def _target_ref(guid: str, part: int) -> str:
@@ -201,6 +223,18 @@ class Chat:
         """This chat's messages as they're edited or unsent, from now on (see IMBridge.changes)."""
         async for message in self._bridge._changes(self.guid, include_from_me):
             yield message
+
+    async def send_poll(self, options: Iterable[str], *, question: str | None = None) -> str:
+        """Send a poll offering these options, and the question as a message after it; see IMBridge.send_poll."""
+        return await self._bridge.send_poll(self.guid, options, question=question)
+
+    async def vote(self, poll: Message | str, *options: str) -> str | None:
+        """Vote for options in one of this chat's polls, keeping your other choices; see IMBridge.vote."""
+        return await self._bridge.vote(poll, *options, chat=self.guid)
+
+    async def unvote(self, poll: Message | str, *options: str) -> str | None:
+        """Take back your vote for options (or all of them) in one of this chat's polls."""
+        return await self._bridge.unvote(poll, *options, chat=self.guid)
 
     def poll(self, message: Message | str) -> PollResults | None:
         """The current state of a poll in this chat: see IMBridge.poll."""
@@ -353,6 +387,18 @@ class IMBridge:
             return await self._start_chat(handle, text, effect=effect, subject=subject)
         self._check_send(chat_guid)
         self._guard.record_send(chat_guid)
+        return await self._send_text(chat_guid, text, reply_to=reply_to, effect=effect, subject=subject)
+
+    async def _send_text(
+        self,
+        chat_guid: str,
+        text: str,
+        *,
+        reply_to: str | None = None,
+        effect: str | None = None,
+        subject: str | None = None,
+    ) -> str:
+        # Only once the chat has passed _check_send and the send is counted (record_send).
         guid, part = parse_target(reply_to) if reply_to else (None, 0)
         result = await self._request(
             "send-message",
@@ -371,6 +417,89 @@ class IMBridge:
         self._recent.append((time.monotonic(), chat_guid, f"text:{text.strip()}"))
         self._remember(sent, chat_guid)
         return sent
+
+    async def send_poll(self, chat: str, options: Iterable[str], *, question: str | None = None) -> str:
+        """Send a poll offering these options (two or more) to an allowed chat; returns the poll message's GUID.
+
+        Messages never shows a poll's title, so a question goes out as its own message right after the poll, as
+        Messages sends it. Both count toward the rate limits, and both are checked before either is sent. People
+        need iOS 26 or macOS 26 or later to see the poll and vote.
+        """
+        choices = [option.strip() for option in options]
+        if len(choices) < 2 or not all(choices):
+            raise ValueError("a poll needs at least two options, none of them empty")
+        if len({choice.casefold() for choice in choices}) < len(choices):
+            raise ValueError("a poll's options must all be different")
+        chat_guid = self.resolve_chat(chat)
+        self._check_send(chat_guid)
+        creator = self._my_handle(chat_guid)
+        if _poll_size(choices, creator) > MAX_POLL_BYTES:
+            raise ValueError("those options are too long for one poll")
+        question = (question or "").strip()
+        for _ in range(2 if question else 1):
+            self._guard.record_send(chat_guid)
+        result = await self._request("send-poll", {"chatGuid": chat_guid, "options": choices, "creatorHandle": creator})
+        sent = result.get("identifier")
+        self._recent.append((time.monotonic(), chat_guid, f"poll:{result.get('sessionIdentifier')}"))
+        self._remember(sent, chat_guid)
+        if question:
+            await self._send_text(chat_guid, question)
+        return sent
+
+    async def vote(self, poll: Message | str, *options: str, chat: str | None = None) -> str | None:
+        """Vote for options in a poll (by text or id), keeping your other choices, as tapping them in Messages does.
+
+        poll is the poll's message, an update of it, or a vote in it (a Message or its GUID). Returns the vote's GUID,
+        or None if you had already chosen them all, in which case nothing is sent.
+        """
+        if not options:
+            raise ValueError("name the options to vote for")
+        return await self._vote(poll, options, chat, add=True)
+
+    async def unvote(self, poll: Message | str, *options: str, chat: str | None = None) -> str | None:
+        """Take back your vote for options in a poll, or for all of them if none are named. Returns the vote's GUID,
+        or None if you hadn't chosen any of them, in which case nothing is sent."""
+        return await self._vote(poll, options, chat, add=False)
+
+    async def _vote(self, poll: Message | str, options: tuple[str, ...], chat: str | None, *, add: bool) -> str | None:
+        guid = poll.guid if isinstance(poll, Message) else parse_target(poll)[0]
+        results = await asyncio.to_thread(self.poll, guid)
+        if results is None or results.chat_guid is None:
+            raise ValueError(f"{guid} isn't a poll, or a vote in one, that this program can see")
+        chat_guid = results.chat_guid
+        if chat is not None and self.resolve_chat(chat) != chat_guid:
+            raise WrongChat(f"poll {results.guid} is in {chat_guid}, not in {chat}")
+        self._check_send(chat_guid)
+        named = [_option_id(results, option) for option in options]
+        current = results.choices.get(None, ())
+        if add:
+            choice = (*current, *(option for option in dict.fromkeys(named) if option not in current))
+        else:
+            choice = tuple(option for option in current if named and option not in named)
+        if choice == current:
+            return None
+        voter = self._my_handle(chat_guid)
+        self._guard.record_send(chat_guid)
+        result = await self._request(
+            "send-poll-vote",
+            {
+                "chatGuid": chat_guid,
+                "pollGuid": results.latest,
+                "sessionIdentifier": results.session,
+                "participantHandle": voter,
+                "optionIdentifiers": list(choice),
+            },
+        )
+        self._recent.append((time.monotonic(), chat_guid, f"vote:{results.session}:{','.join(sorted(choice))}"))
+        return result.get("identifier")
+
+    def _my_handle(self, chat_guid: str) -> str:
+        """Which of your addresses you are in a chat: how Messages names you in the polls and votes you send there."""
+        info = self.db.chat(chat_guid)
+        mine = (info.address if info else None) or (self.address if isinstance(self.address, str) else None)
+        if not mine:
+            raise ValueError(f"can't tell which of your addresses {chat_guid} is on; set address= to say")
+        return display_address(mine)
 
     async def send_file(self, chat: str, path: str | Path, *, reply_to: str | None = None) -> str:
         """Send a file (a photo, GIF, video or document) to an allowed chat; returns the new message's GUID.
@@ -628,7 +757,7 @@ class IMBridge:
         found = self.db.message(guid)
         if found is None or not self._admits(found, strict=False):
             return None
-        return self.db.poll(guid)
+        return self.db.poll(guid, mine=self._mine)  # a vote from any of your addresses is yours (self-chat echoes)
 
     # --- which of your addresses this program is -----------------------------------------------------------------
 
@@ -659,6 +788,10 @@ class IMBridge:
         if message.reaction:
             reaction = message.reaction
             fingerprint = f"reaction:{reaction.target_guid}:{reaction.label}:{reaction.removed}"
+        elif message.poll:
+            fingerprint = f"poll:{message.poll.session}"
+        elif message.vote:
+            fingerprint = f"vote:{message.vote.session}:{','.join(sorted(message.vote.options))}"
         else:
             fingerprint = f"text:{(message.text or '').strip()}"
         now = time.monotonic()

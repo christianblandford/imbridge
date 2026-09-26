@@ -39,7 +39,7 @@ def test_tools_are_described_and_annotated(chat_db):
     tools = {tool.name: tool for tool in asyncio.run(server_for(chat_db).list_tools())}
     assert set(tools) == {
         "list_chats", "read_messages", "check_messages", "read_poll", "send_message", "reply", "react",
-        "edit_message", "unsend_message", "show_typing", "whoami",
+        "send_poll", "vote", "edit_message", "unsend_message", "show_typing", "whoami",
     }
     assert all(tool.description for tool in tools.values())
     assert tools["read_messages"].annotations.read_only_hint
@@ -92,6 +92,7 @@ def test_sends_to_chats_that_arent_allowed_are_refused_before_messages_is_touche
         ("reply", {"message_guid": "M1", "text": "hi"}),
         ("react", {"message_guid": "M1", "reaction": "👀"}),
         ("show_typing", {"chat": ALEX}),
+        ("send_poll", {"chat": ALEX, "options": ["a", "b"]}),
     ]:
         started = time.monotonic()
         with pytest.raises(ToolError, match="Only the user can allow a chat"):

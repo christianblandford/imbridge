@@ -193,6 +193,11 @@ async def _send(args: argparse.Namespace) -> int:
             guid = await im.send(args.chat, args.text, reply_to=args.reply_to, effect=args.effect)
         elif args.command == "send-file":
             guid = await im.send_file(args.chat, args.path, reply_to=args.reply_to)
+        elif args.command == "send-poll":
+            guid = await im.send_poll(args.chat, args.options, question=args.question)
+        elif args.command == "vote":
+            guid = await (im.unvote if args.remove else im.vote)(args.poll, *args.options)
+            guid = guid or "(no change: that was already your choice)"
         elif args.command == "reply":
             guid = await im.reply(args.message, args.text)
         else:
@@ -245,6 +250,16 @@ def _parser() -> argparse.ArgumentParser:
     send_file.add_argument("path")
     send_file.add_argument("--reply-to", metavar="GUID", help="send it as an inline reply to this message")
 
+    send_poll = commands.add_parser("send-poll", parents=[mine], help="send a poll to an allowed chat")
+    send_poll.add_argument("chat", help="phone number, email, group name, or chat GUID")
+    send_poll.add_argument("options", nargs="+", metavar="OPTION", help="two or more")
+    send_poll.add_argument("--question", help="sent as a message right after the poll")
+
+    vote = commands.add_parser("vote", parents=[mine], help="vote in a poll, keeping your other choices")
+    vote.add_argument("poll", metavar="GUID", help="the poll's message, or a vote in it")
+    vote.add_argument("options", nargs="*", metavar="OPTION", help="by text or id")
+    vote.add_argument("--remove", action="store_true", help="take back your vote for these (or all) options")
+
     reply = commands.add_parser("reply", parents=[mine], help="reply inline to a message in an allowed chat")
     reply.add_argument("message", metavar="GUID")
     reply.add_argument("text")
@@ -292,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
             return _allowed()
         if args.command == "start":
             return asyncio.run(_start(args))
-        if args.command in ("send", "send-file", "reply", "react"):
+        if args.command in ("send", "send-file", "send-poll", "vote", "reply", "react"):
             return asyncio.run(_send(args))
         if args.command == "watch":
             return asyncio.run(_watch(args))
@@ -325,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         WrongChat,
         EditLimit,
         FileNotFoundError,
+        ValueError,
         SendNotAllowed,
         AddressNotChosen,
         WrongAddress,

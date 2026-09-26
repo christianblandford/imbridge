@@ -198,6 +198,25 @@ def build_server(im: IMBridge) -> MCPServer:
         except Exception as error:
             raise _refusal(error) from error
 
+    @server.tool(annotations=SENDS)
+    async def send_poll(chat: str, options: list[str], question: str | None = None) -> dict[str, Any]:
+        """Send a poll to an allowed chat: two or more options, and optionally a question, which goes out as a
+        message right after the poll (Messages doesn't show poll titles). Returns the poll's guid."""
+        try:
+            return {"guid": await im.send_poll(chat, options, question=question)}
+        except Exception as error:
+            raise _refusal(error) from error
+
+    @server.tool(annotations=SENDS)
+    async def vote(message_guid: str, option: str, remove: bool = False) -> dict[str, Any]:
+        """Vote for an option in a poll (by its text), keeping the user's other choices; remove=true takes that vote
+        back. message_guid is the poll's guid, or a vote's in it."""
+        try:
+            sent = await (im.unvote if remove else im.vote)(message_guid, option)
+            return {"guid": sent, "changed": sent is not None}
+        except Exception as error:
+            raise _refusal(error) from error
+
     @server.tool(annotations=CHANGES)
     async def edit_message(message_guid: str, text: str) -> dict[str, Any]:
         """Change the text of a message you sent; readers see it marked Edited. iMessage allows 5 edits within
