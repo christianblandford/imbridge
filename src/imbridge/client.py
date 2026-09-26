@@ -33,6 +33,7 @@ EFFECTS = {
     "lasers": "com.apple.messages.effect.CKLasersEffect",
     "fireworks": "com.apple.messages.effect.CKFireworksEffect",
     "celebration": "com.apple.messages.effect.CKSparklesEffect",
+    "shooting_star": "com.apple.messages.effect.CKShootingStarEffect",
 }
 
 
@@ -193,12 +194,15 @@ class IMBridge:
                 await asyncio.sleep(self.poll_interval)
 
     def history(self, chat: str, limit: int = 50) -> list[Message]:
+        """A chat's latest messages, oldest first."""
         return self.db.history(self.resolve_chat(chat), limit)
 
     def chats(self, limit: int = 50) -> list[Chat]:
+        """Chats, most recently active first."""
         return self.db.chats(limit)
 
     def message(self, guid: str) -> Message | None:
+        """One message by GUID (a "p:N/GUID" tapback target works too), or None."""
         return self.db.message(parse_target(guid)[0])
 
     def resolve_chat(self, chat: str) -> str:
