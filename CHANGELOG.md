@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-09-26)
 
 - Edits and unsends, read: `Message.edited_at`, `Message.edit_count` and `Message.unsent_at`, and `im.message(guid)`
   returns the current text. On macOS 26+ an unsend leaves `date_retracted` at 0 and is marked only in
