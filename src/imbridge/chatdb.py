@@ -119,7 +119,7 @@ class ChatDB:
         self._retracted = "0"  # message.date_retracted, likewise
         self._message_address = "NULL"  # message.destination_caller_id, likewise
         self._has_polls = False  # message.balloon_bundle_id and payload_data, likewise
-        self._has_schedules = False  # message.schedule_type and is_delivered, likewise
+        self._has_schedules = False  # message.schedule_type, schedule_state and is_delivered, likewise
         self._sticker = "0"  # attachment.is_sticker, likewise
 
     def close(self) -> None:
@@ -169,6 +169,15 @@ class ChatDB:
         if chat_guid is None:
             return self._messages(f"{where} ORDER BY m.date", ())
         return self._messages(f"{where} AND c.guid = ? ORDER BY m.date", (chat_guid,))
+
+    def schedule_state(self, guid: str) -> int | None:
+        """A Send Later message's schedule_state: 1 while it's on its way to Apple's servers, 2 once they hold it
+        (only then does cancelling stick), 3 once sent. None if there's no such message or no such column."""
+        self._connect()
+        if not self._has_schedules:
+            return None
+        rows = self._query("SELECT schedule_state FROM message WHERE guid = ?", (guid,))
+        return rows[0][0] if rows else None
 
     def poll(self, guid: str, *, mine: Iterable[str] = ()) -> PollResults | None:
         """The current state of a poll, from the poll's GUID, an update's, or a vote's. Votes sent from any address
@@ -332,7 +341,7 @@ class ChatDB:
                 raise FullDiskAccessError(f"{self.path} has no message table (is this Messages' chat.db?)")
             self._select = _message_select(message_columns, chat_columns, join_columns)
             self._has_polls = {"balloon_bundle_id", "payload_data"} <= message_columns
-            self._has_schedules = {"schedule_type", "is_delivered"} <= message_columns
+            self._has_schedules = {"schedule_type", "schedule_state", "is_delivered"} <= message_columns
             if "is_sticker" in attachment_columns:
                 self._sticker = "a.is_sticker"
             if "last_addressed_handle" in chat_columns:

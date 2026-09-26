@@ -15,20 +15,23 @@ TOMORROW = datetime.now() + timedelta(days=1)
 
 def schedulable(path):
     db = sqlite3.connect(path)
-    for column in ("schedule_type INTEGER DEFAULT 0", "is_delivered INTEGER DEFAULT 0"):
+    for column in ("schedule_type", "schedule_state", "is_delivered"):
+        column += " INTEGER DEFAULT 0"
         db.execute(f"ALTER TABLE message ADD COLUMN {column}")
     db.commit()
     db.close()
     return path
 
 
-def store(path, guid, chat, when, *, schedule_type=2, delivered=0):
-    """One of your messages as chat.db has it: held for later (schedule_type 2, undelivered) unless told otherwise."""
+def store(path, guid, chat, when, *, schedule_type=2, state=2, delivered=0):
+    """One of your messages as chat.db has it: held for later by Apple's servers (schedule_type 2, schedule_state 2,
+    undelivered) unless told otherwise."""
     db = sqlite3.connect(path)
     date = int((when - APPLE_EPOCH) * 1e9)
     rowid = db.execute(
-        "INSERT INTO message (guid, text, handle_id, is_from_me, date, service, schedule_type, is_delivered)"
-        " VALUES (?, 'later', 0, 1, ?, 'iMessage', ?, ?)", (guid, date, schedule_type, delivered),
+        "INSERT INTO message (guid, text, handle_id, is_from_me, date, service, schedule_type, schedule_state,"
+        " is_delivered) VALUES (?, 'later', 0, 1, ?, 'iMessage', ?, ?, ?)",
+        (guid, date, schedule_type, state, delivered),
     ).lastrowid
     db.execute("INSERT INTO chat_message_join VALUES (?, ?, ?)", (chat, rowid, date))
     db.commit()
@@ -111,3 +114,15 @@ def test_cancelling(chat_db, monkeypatch):
         run(path, lambda im: im.cancel_scheduled("STUCK"), None, allow=[ALEX])
     with pytest.raises(WrongChat):
         run(path, lambda im: im.chat("any;+;chat123").cancel_scheduled("STUCK"), None, allow=[ALEX, "any;+;chat123"])
+
+
+def test_cancelling_waits_until_the_servers_hold_it(chat_db, monkeypatch):
+    # a cancel sent while the message is still on its way to Apple's servers (schedule_state 1) is lost, and the
+    # message goes out anyway, so imbridge refuses instead of sending it
+    path = schedulable(chat_db)
+    store(path, "ON_ITS_WAY", 1, TOMORROW.timestamp(), state=1)
+    monkeypatch.setattr(client, "CANCEL_CHECK", 0.3)
+    log = []
+    with pytest.raises(SendLaterFailed, match="don't hold"):
+        run(path, lambda im: im.cancel_scheduled("ON_ITS_WAY"), None, log, allow=[ALEX])
+    assert log == []
