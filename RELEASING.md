@@ -33,3 +33,8 @@ If the PyPI step fails, fix the cause and re-run the failed jobs from the Action
 To move to a newer BlueBubbles helper, change `HELPER_COMMIT` in `helper/UPSTREAM`, run `helper/build.sh`, and fix
 any patch that no longer applies (`git apply` stops at the first one that fails). Then run `imbridge doctor` and a
 live send, reply and tapback test on a real Mac before releasing.
+
+To change the helper, edit `build/upstream` after a build: `build.sh` leaves it with one commit per patch. For a new
+patch, `git -C build/upstream diff` is exactly your edits; save it (with a description first) as the next
+`helper/patches/NNNN-name.patch`. To change the last patch, `git -C build/upstream diff HEAD~1` is that patch with
+your edits. Rebuild to check the series still applies from scratch.

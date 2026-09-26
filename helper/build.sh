@@ -22,8 +22,12 @@ if ! git -C "$WORK" cat-file -e "$HELPER_COMMIT^{commit}" 2>/dev/null; then
 fi
 git -C "$WORK" checkout -q -f --detach "$HELPER_COMMIT"
 git -C "$WORK" clean -q -fdx
+# Each patch becomes a commit, so after editing build/upstream, `git -C build/upstream diff HEAD~1` is the last patch
+# with the edits (put the patch's description first) and `git diff` is just the edits.
 for patch in "$HERE"/patches/*.patch; do
   git -C "$WORK" apply "$patch"
+  git -C "$WORK" add -A
+  git -C "$WORK" -c user.name=imbridge -c user.email=build@localhost commit -q --no-verify -m "${patch:t}"
 done
 
 SRC=$WORK/Messages/MacOS-11+
