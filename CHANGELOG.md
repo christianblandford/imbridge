@@ -2,17 +2,20 @@
 
 ## Unreleased
 
-- **Fix:** `cancel_scheduled()` could report a Send Later message cancelled, and its row disappear, while the message
-  still went out at its time: a cancel sent while the message is still on its way to Apple's servers
-  (`schedule_state` 1) is lost. It now waits until the servers hold the message (state 2), which takes well under a
-  second, and raises `SendLaterFailed` rather than cancel too early. Verified live: cancelled on its way, the message
-  was delivered; cancelled the moment it was held, it stayed cancelled.
 - Stickers, sent: `chat.send_sticker(path, on=None, label=None)` (and `imbridge send-sticker`) sends an image as a
   sticker, marked the way Messages marks the stickers you make, on its own or stuck onto one of the chat's messages
   (helper/patches/0009-stickers.patch).
 - Stickers, read: `Attachment.is_sticker` marks sticker images (sent on their own, stuck onto a message, or used as a
   tapback), and a sticker used as a tapback (associated types 2007/3007) is a `Reaction` of kind `sticker_tapback`
   instead of `unknown`. A sticker stuck onto a bubble stays kind `sticker`.
+
+## 0.4.1 (2026-09-26)
+
+- **Fix:** `cancel_scheduled()` could report a Send Later message cancelled, and its row disappear, while the message
+  still went out at its time: a cancel sent while the message is still on its way to Apple's servers
+  (`schedule_state` 1) is lost. It now waits until the servers hold the message (state 2), which takes well under a
+  second, and raises `SendLaterFailed` rather than cancel too early. Verified live: cancelled on its way, the message
+  was delivered; cancelled the moment it was held, it stayed cancelled.
 
 ## 0.4.0 (2026-09-26)
 
