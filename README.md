@@ -62,7 +62,7 @@ As of September 2026, from each project's code:
 | Send Later | Messages' own, checked | the server's own scheduler | ✗ | Messages' own |
 | Stickers | send, stick on, tapback | ✗ | send, stick on | send |
 | Bold, italics, text effects | ✓ | ✗ | bold, italics | ✓ |
-| Send link previews | ✗ (coming) | ✗ | ✓ | ✗ |
+| Send link previews | ✓, public pages only | ✗ | ✓ | ✗ |
 | MCP server | ✓ | ✗ | ✗ | ✗ |
 | Sends only to chats you allowed | ✓ | ✗ | ✗ | ✗ |
 | Needs SIP disabled | yes | for Private API features | for its helper's features | yes |
@@ -261,6 +261,13 @@ when it has them, and the Apple Maps link (Messages offloads old attachments, an
 `location`). `send_location(latitude, longitude, name=None)` sends a pin for the coordinates you give, as Messages
 sends a place from Maps; imbridge never shares where the Mac is.
 
+**Link previews.** `send_link(url)` sends a link with its preview: the card with the page's title, summary and
+picture that Messages makes when you paste a link. Messages loads the page on this Mac, as it would for you, so
+previews are only for the public internet. A link to this Mac or your local network raises `ValueError`, and so does a
+page that redirects there or takes its pictures from there. A page that gives no preview, or doesn't load within 15
+seconds, goes as a plain link. `send()` never adds previews: in Messages a link with a preview is a message of its own,
+so a link inside other text stays text. A link someone sends arrives with `link` set.
+
 **Send Later.** `send_later(text, at)` schedules a message with Messages' own Send Later: it goes out at the start of
 that minute (from a minute to 14 days ahead) even if your program, or Messages, isn't running then. The allowlist
 and rate limits apply when it's scheduled, so disallowing the chat afterwards doesn't stop it: cancel it with
@@ -268,7 +275,7 @@ and rate limits apply when it's scheduled, so disallowing the chat afterwards do
 get a scheduled message at once, and checks that Messages really held each message in the right chat
 (`SendLaterFailed` if not).
 
-**Retrying safely.** `send()`, `reply()` and `send_file()` take a `guid` you choose (a UUID, like
+**Retrying safely.** `send()`, `reply()`, `send_file()` and `send_link()` take a `guid` you choose (a UUID, like
 `str(uuid.uuid4())`). Record it before sending; after a timeout or a crash, `im.message(guid)` tells you whether the
 message went out, and sending again with the same `guid` doesn't deliver it twice: Messages drops the duplicate.
 
@@ -352,6 +359,7 @@ imbridge disallow CHAT | --any
 imbridge allowed
 imbridge send +15551234567 "hello" [--reply-to GUID] [--effect confetti] [--text-effect big]
 imbridge send-file +15551234567 photo.jpg [--reply-to GUID]
+imbridge send-link +15551234567 https://example.com/article   # with its preview
 imbridge send-sticker +15551234567 party.png [--on GUID] [--label "a party hat"]
 imbridge react-sticker GUID party.png                # a sticker as a tapback
 imbridge send-location +15551234567 37.3349 -122.0090 [--name "Apple Park"]
@@ -371,7 +379,7 @@ imbridge mcp [--address ADDRESS]                     # the MCP server, over stdi
 imbridge <command> --address +15550002222           # start, the sends, history, watch and mcp take it
 ```
 
-`send`, `send-file`, `send-poll`, `vote`, `reply` and `react` print the new message's GUID. They follow the same allowlist and rate limits as the
+`send`, `send-file`, `send-link`, `send-poll`, `vote`, `reply` and `react` print the new message's GUID. They follow the same allowlist and rate limits as the
 library.
 
 ## Using it with an AI agent
@@ -404,6 +412,7 @@ itself.
 | `react` | a tapback with any emoji or a classic |
 | `send_poll`, `vote` | send a poll (and its question), or vote in one |
 | `send_location` | send a location pin |
+| `send_link` | send a link with its preview |
 | `send_later`, `list_scheduled`, `cancel_scheduled` | Send Later: schedule a message, see what's waiting, cancel it |
 | `edit_message`, `unsend_message` | change or take back a message it sent, within iMessage's limits |
 | `show_typing` | the typing indicator |
@@ -486,6 +495,14 @@ applies imbridge's changes in order:
 2. Skip chat items without `-index` (the macOS 26+ crash when replying or reacting while someone is typing)
 3. A build fix for current clang
 4. imbridge's transport: its own port, the token, line-delimited requests, and fast reconnects
+5. Polls: sending one, and voting
+6. The Focus-status check, renamed in macOS 26.4
+7. Send Later: scheduling and cancelling
+8. Sending through the chat registry, as Messages does, so a chat is never relabeled as your own address
+9. Stickers, on their own or stuck onto a message
+10. Sticker tapbacks
+11. Message GUIDs the caller chooses
+12. Link previews: loading one with LinkPresentation, and sending it
 
 `helper/build.sh` builds it with only the Xcode Command Line Tools. Released wheels include the built helper.
 

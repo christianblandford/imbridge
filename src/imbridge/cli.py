@@ -73,8 +73,8 @@ def _print_poll(results: PollResults, as_json: bool) -> None:
 
 
 SENDING = (
-    "send", "send-file", "send-sticker", "react-sticker", "send-location", "send-later", "cancel", "send-poll", "vote",
-    "reply", "react",
+    "send", "send-file", "send-link", "send-sticker", "react-sticker", "send-location", "send-later", "cancel",
+    "send-poll", "vote", "reply", "react",
 )
 
 
@@ -226,6 +226,8 @@ async def _send(args: argparse.Namespace) -> int:
             guid = await im.send_sticker(args.chat, args.path, on=args.on, label=args.label)
         elif args.command == "send-location":
             guid = await im.send_location(args.chat, args.latitude, args.longitude, name=args.name)
+        elif args.command == "send-link":
+            guid = await im.send_link(args.chat, args.url)
         elif args.command == "react-sticker":
             guid = await im.react_with_sticker(args.message, args.path)
         elif args.command == "send-later":
@@ -290,6 +292,10 @@ def _parser() -> argparse.ArgumentParser:
     send_file.add_argument("chat", help="phone number, email, group name, or chat GUID")
     send_file.add_argument("path")
     send_file.add_argument("--reply-to", metavar="GUID", help="send it as an inline reply to this message")
+
+    link = commands.add_parser("send-link", parents=[mine], help="send a link with its preview")
+    link.add_argument("chat", help="phone number, email, group name, or chat GUID")
+    link.add_argument("url", help="an http:// or https:// link to a page on the public internet")
 
     sticker = commands.add_parser("send-sticker", parents=[mine], help="send an image as a sticker")
     sticker.add_argument("chat", help="phone number, email, group name, or chat GUID")

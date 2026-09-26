@@ -1,0 +1,141 @@
+imbridge link previews: fetch-link {url, directory, timeout?} loads a page's preview with LinkPresentation, as Messages
+does when you paste a link, and archives it with LPMessagesPayload (the "RichLink" payload of Messages' URL balloon),
+saving the pictures it refers to as .pluginPayloadAttachment files in directory; it replies with the payload (base64)
+and the files, or found: NO. send-link {chatGuid, url, payload, attachments, guid?} sends the URL as text in a URL
+balloon with that payload, its pictures as transfers hidden from the transcript, in the payload's order. Two steps, so
+the caller can check where a preview came from before anything is sent.
+
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+index e0e6c9f..6fded0b 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
++++ b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+@@ -410,6 +410,113 @@ static void IMBSendStickerTapback(IMChat *chat, NSDictionary *data, NSString *tr
+     }
+ }
+ 
++// imbridge: link previews. A link sent with its preview is the URL as text in a URL balloon whose payload is what
++// LinkPresentation makes for Messages (an archived "RichLink" of the page's metadata); the pictures in it travel as
++// hidden .pluginPayloadAttachment transfers, in the order the payload numbers them. Loading a preview and sending it
++// are separate steps, so imbridge can check where a preview came from before anything is sent.
++static NSString *const IMBLinkBalloon = @"com.apple.messages.URLBalloonProvider";
++
++// Loads a page's preview the way Messages does and saves its pictures into directory; replies with the archived
++// payload and the pictures' files, or found: NO when the page has no preview to give.
++static void IMBFetchLink(NSDictionary *data, NSString *transaction) {
++    id text = data[@"url"], directory = data[@"directory"];
++    NSURL *url = [text isKindOfClass:[NSString class]] ? [NSURL URLWithString:text] : nil;
++    NSString *scheme = [[url scheme] lowercaseString];
++    if (!([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) || [[url host] length] == 0
++            || ![directory isKindOfClass:[NSString class]]) {
++        IMBReply(transaction, @{@"error": @"A link preview needs an http(s) url and a directory"});
++        return;
++    }
++    Class providerClass = NSClassFromString(@"LPMetadataProvider"), payloadClass = NSClassFromString(@"LPMessagesPayload");
++    SEL fetch = NSSelectorFromString(@"startFetchingMetadataForURL:completionHandler:");
++    SEL archive = NSSelectorFromString(@"dataRepresentationWithOutOfLineAttachments:");
++    if (![providerClass instancesRespondToSelector:fetch] || ![payloadClass instancesRespondToSelector:archive]) {
++        IMBReply(transaction, @{@"error": @"This macOS can't make link previews"});
++        return;
++    }
++    id provider = [providerClass new];
++    [provider setValue:([data[@"timeout"] isKindOfClass:[NSNumber class]] ? data[@"timeout"] : @15) forKey:@"timeout"];
++    void (^loaded)(id, NSError *) = ^(id metadata, NSError *error) {
++        dispatch_async(dispatch_get_main_queue(), ^{
++            (void)provider;  // held until its fetch ends
++            if (metadata == nil) {
++                IMBReply(transaction, @{@"found": @NO, @"reason": [error localizedDescription] ?: @"no preview"});
++                return;
++            }
++            @try {
++                id payload = [payloadClass new];
++                ((void (*)(id, SEL, id))objc_msgSend)(payload, NSSelectorFromString(@"setMetadata:"), metadata);
++                NSArray *pictures = nil;
++                NSData *archived = ((id (*)(id, SEL, NSArray **))objc_msgSend)(payload, archive, &pictures);
++                NSMutableArray *files = [NSMutableArray array];
++                for (id picture in pictures ?: @[]) {
++                    NSString *name = [[[NSUUID UUID] UUIDString] stringByAppendingPathExtension:@"pluginPayloadAttachment"];
++                    NSString *path = [directory stringByAppendingPathComponent:name];
++                    BOOL saved = [picture isKindOfClass:[NSData class]] ? [picture writeToFile:path atomically:YES]
++                        : [picture isKindOfClass:[NSURL class]] && [[NSFileManager defaultManager]
++                              copyItemAtURL:picture toURL:[NSURL fileURLWithPath:path] error:nil];
++                    if (!saved) {
++                        IMBReply(transaction, @{@"error": @"Couldn't save the preview's pictures"});
++                        return;
++                    }
++                    [files addObject:path];
++                }
++                if ([archived length] == 0) {
++                    IMBReply(transaction, @{@"error": @"Couldn't archive the preview"});
++                    return;
++                }
++                IMBReply(transaction, @{@"found": @YES, @"payload": [archived base64EncodedStringWithOptions:0],
++                                        @"attachments": files});
++            } @catch (NSException *exception) {
++                IMBReply(transaction, @{@"error": [NSString stringWithFormat:@"Couldn't make the preview: %@", exception.reason]});
++            }
++        });
++    };
++    ((void (*)(id, SEL, id, id))objc_msgSend)(provider, fetch, url, loaded);
++}
++
++// Sends a link with the preview IMBFetchLink made. Its pictures are transfers hidden from the transcript (they belong
++// to the balloon), marked so before they're registered with the daemon.
++static void IMBSendLink(IMChat *chat, NSDictionary *data, NSString *transaction) {
++    id text = data[@"url"], encoded = data[@"payload"], pictures = data[@"attachments"], chosen = data[@"guid"];
++    NSURL *url = [text isKindOfClass:[NSString class]] ? [NSURL URLWithString:text] : nil;
++    NSData *payload = [encoded isKindOfClass:[NSString class]]
++        ? [[NSData alloc] initWithBase64EncodedString:encoded options:0] : nil;
++    if (url == nil || [payload length] == 0 || !IMBStrings(pictures, 0)) {
++        IMBReply(transaction, @{@"error": @"A link needs url, payload and attachments"});
++        return;
++    }
++    BOOL uuid = [chosen isKindOfClass:[NSString class]] && [[NSUUID alloc] initWithUUIDString:chosen] != nil;
++    @try {
++        IMFileTransferCenter *center = [IMFileTransferCenter sharedInstance];
++        NSMutableArray *transfers = [NSMutableArray array];
++        for (NSString *path in pictures) {
++            NSString *guid = [center guidForNewOutgoingTransferWithLocalURL:[NSURL fileURLWithPath:path]];
++            IMFileTransfer *transfer = guid ? [center transferForGUID:guid] : nil;
++            if (transfer == nil) {
++                IMBReply(transaction, @{@"error": @"Couldn't prepare the preview's pictures"});
++                return;
++            }
++            transfer.hideAttachment = YES;
++            [center registerTransferWithDaemon:guid];
++            [transfers addObject:guid];
++        }
++        NSAttributedString *body = [[NSAttributedString alloc] initWithString:text attributes:@{
++            @"__kIMBaseWritingDirectionAttributeName": @"-1", @"__kIMLinkAttributeName": url,
++            @"__kIMLinkIsRichLinkAttributeName": @YES, @"__kIMMessagePartAttributeName": @0}];
++        IMMessage *message = [[IMMessage alloc] initWithSender:nil time:nil text:body messageSubject:nil
++                                             fileTransferGUIDs:transfers flags:0x100005 error:nil
++                                                          guid:(uuid ? [chosen uppercaseString] : nil)
++                                                       subject:nil balloonBundleID:IMBLinkBalloon payloadData:payload
++                                         expressiveSendStyleID:nil];
++        message.messageSummaryInfo = @{@"amc": @0, @"ust": @YES};
++        IMBDispatch(chat, message);
++        IMBReply(transaction, @{@"identifier": [message guid] ?: @""});
++    } @catch (NSException *exception) {
++        IMBReply(transaction, @{@"error": [NSString stringWithFormat:@"Couldn't send the link: %@", exception.reason]});
++    }
++}
++
+ // imbridge: Send Later (macOS 15+). A scheduled message is built by the factory made for it, which takes the delivery
+ // date alone; building one by hand states the time twice, and IMCore has been seen honouring one and not the other
+ // (sending at once, or filing it in your own conversation). A chat that can't schedule sends at once, so ask first.
+@@ -915,6 +1022,15 @@ -(void) handleServerEvent: (NSString*)event data: (NSDictionary*)data transactio
+             IMBSendPollVote(chat, data[@"pollGuid"], data[@"sessionIdentifier"], data[@"participantHandle"],
+                             data[@"optionIdentifiers"], transaction);
+         }
++    // imbridge: load a link's preview
++    } else if ([event isEqualToString:@"fetch-link"]) {
++        IMBFetchLink(data, transaction);
++    // imbridge: send a link with its preview
++    } else if ([event isEqualToString:@"send-link"]) {
++        IMChat *chat = [[BlueBubblesHelper sharedInstance] getIMChatFromGuid:data[@"chatGuid"] transaction:transaction];
++        if (chat != nil) {
++            IMBSendLink(chat, data, transaction);
++        }
+     // If the server tells us to send a single attachment
+     } else if ([event isEqualToString:@"send-attachment"]) {
+         NSString *filePath = data[@"filePath"];

@@ -2,8 +2,18 @@
 
 ## Unreleased
 
+- Link previews: `chat.send_link(url, guid=None)`, `imbridge send-link` and the MCP tool `send_link` send a link
+  with its preview card (title, summary, pictures), the way Messages sends a pasted link
+  (helper/patches/0012-link-previews.patch). Messages loads the page with LinkPresentation and archives it with
+  LinkPresentation's own Messages payload; the pictures go as hidden transfers, as Messages sends them. Previews are
+  for the public internet only: a link whose host is on this Mac or a private network raises `ValueError` before
+  Messages loads anything, and a preview that names such a host (a redirect, a picture) is never sent. A page with no
+  preview, or one that takes over 15 seconds, goes as a plain link. Verified live: the message matches what Messages
+  sends, and the recipient saw the preview.
 - Link previews, read: a link sent with a preview arrives with `Message.link` (a `LinkPreview`: url, title, summary,
   site name, original url), read from the archived RichLink Messages stores with it.
+- `Message.attachments` leaves out attachments Messages hides: the pictures behind a balloon, like a link preview's or
+  an iMessage app's, which aren't anything the sender attached.
 
 ## 0.5.0 (2026-09-26)
 

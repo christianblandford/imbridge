@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import errno
 import hashlib
 import json
@@ -12,6 +13,7 @@ import re
 import shutil
 import tempfile
 import time
+import urllib.parse
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Iterable
@@ -34,6 +36,7 @@ from .addresses import (
 )
 from .chatdb import APPLE_EPOCH, ChatDB, ChatInfo, Message
 from .guard import AnyChat, SendGuard, one_to_one_handle
+from .links import is_public, preview_urls, web_url
 from .locations import make_pin
 from .polls import PollResults
 from .protocol import HelperBusy, HelperError, HelperNotConnected, HelperServer, HelperUnauthorized
@@ -54,6 +57,7 @@ CANCEL_CHECK = 10.0  # seconds to wait for a Send Later message to be held, and 
 SCHEDULE_HELD = 2  # message.schedule_state once Apple's servers hold a Send Later message (1 on the way there)
 STICKER_TYPES = (".png", ".heic", ".heics", ".gif", ".jpg", ".jpeg", ".webp")
 MAX_POLL_BYTES = 4096  # a poll's options, as Messages encodes them, must fit in this
+LINK_TIMEOUT = 15.0  # seconds Messages gets to load a link's preview before it goes as a plain link
 
 
 @dataclass
@@ -272,6 +276,10 @@ class Chat:
     async def send_location(self, latitude: float, longitude: float, *, name: str | None = None) -> str:
         """Send a location pin to this chat: see IMBridge.send_location."""
         return await self._bridge.send_location(self.guid, latitude, longitude, name=name)
+
+    async def send_link(self, url: str, *, guid: str | None = None) -> str:
+        """Send a link with its preview to this chat: see IMBridge.send_link."""
+        return await self._bridge.send_link(self.guid, url, guid=guid)
 
     async def react_with_sticker(self, message: Message | str, path: str | Path) -> str:
         """Tapback one of this chat's messages with a sticker: see IMBridge.react_with_sticker."""
@@ -638,6 +646,65 @@ class IMBridge:
             sent = await self._send_staged("send-attachment", pin, request)
         self._remember(sent, chat_guid)
         return sent
+
+    async def send_link(self, chat: str, url: str, *, guid: str | None = None) -> str:
+        """Send a link with its preview, as Messages does when you paste one: the page's title, summary and picture in
+        a card with the link. Returns the message's GUID; guid is one you choose, as in send().
+
+        Messages loads the page on this Mac, as it would for you. So previews are only for the public internet: a link
+        to this Mac or your local network raises ValueError, and so does a page that redirects there or takes its
+        pictures from there. A page with no preview to give, or that takes longer than LINK_TIMEOUT to load, goes as a
+        plain link.
+        """
+        guid = _chosen(guid)
+        url = web_url(url)
+        chat_guid = self.resolve_chat(chat)
+        self._check_send(chat_guid)
+        host = urllib.parse.urlsplit(url).hostname
+        public = await asyncio.to_thread(is_public, host)
+        if public is False:
+            raise ValueError(f"{host} isn't on the public internet, so imbridge won't load a preview of it")
+        self._guard.record_send(chat_guid)
+        preview = await self._fetch_link(url) if public else None
+        if preview is None:
+            return await self._send_text(chat_guid, url, guid=guid)
+        folder, request = preview
+        try:
+            result = await self._request("send-link", {**request, "chatGuid": chat_guid, "url": url, "guid": guid})
+        except HelperError as error:
+            if not isinstance(error, HelperNotConnected):  # refused, so nothing refers to the pictures
+                shutil.rmtree(folder, ignore_errors=True)
+            raise
+        sent = result.get("identifier")
+        self._recent.append((time.monotonic(), chat_guid, f"text:{url}"))
+        self._remember(sent, chat_guid)
+        return sent
+
+    async def _fetch_link(self, url: str) -> tuple[Path, dict[str, Any]] | None:
+        """Have Messages load url's preview into a folder in its Attachments; returns the folder and what send-link
+        needs, or None if the page gave no preview. Raises ValueError if the preview names an address that isn't on
+        the public internet (a redirect, or a picture)."""
+        folder = config.OUTGOING / uuid.uuid4().hex
+        folder.mkdir(parents=True)
+        try:
+            result = await self._request("fetch-link", {"url": url, "directory": str(folder), "timeout": LINK_TIMEOUT})
+            if not result.get("found"):
+                log.info("no preview for %s (%s); sending it as a plain link", url, result.get("reason"))
+                shutil.rmtree(folder, ignore_errors=True)
+                return None
+            payload = base64.b64decode(result["payload"])
+            hosts = {urllib.parse.urlsplit(found).hostname for found in preview_urls(payload)} - {None}
+            checked = await asyncio.gather(*(asyncio.to_thread(is_public, host) for host in hosts))
+            if private := sorted(host for host, public in zip(hosts, checked, strict=True) if public is False):
+                raise ValueError(f"the preview of {url} comes partly from {', '.join(private)}, which isn't on the "
+                                 "public internet, so imbridge won't send it")
+            pictures = [str(Path(path)) for path in result.get("attachments") or []]
+            if any(Path(path).parent != folder for path in pictures):
+                raise HelperError(f"the preview of {url} came back with pictures outside {folder}")
+        except BaseException:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+        return folder, {"payload": result["payload"], "attachments": pictures}
 
     async def react_with_sticker(self, message: Message | str, path: str | Path, *, chat: str | None = None) -> str:
         """Tapback a message with a sticker (an image, like the stickers in Messages' tapback menu). Like any tapback,

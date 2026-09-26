@@ -39,6 +39,8 @@ These tools read and send iMessages on the user's Mac, through Messages.app.
   tally and the question sent with the poll.
 - send_later schedules a message with Messages' Send Later; list_scheduled and cancel_scheduled manage what's
   waiting.
+- To share a link, send it on its own with send_link: the recipient sees a card with the page's title and picture,
+  as when a person pastes a link. A link inside send_message text stays plain text.
 """
 
 READS = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -250,6 +252,16 @@ def build_server(im: IMBridge) -> MCPServer:
         guid."""
         try:
             return {"guid": await im.send_location(chat, latitude, longitude, name=name)}
+        except Exception as error:
+            raise _refusal(error) from error
+
+    @server.tool(annotations=SENDS)
+    async def send_link(chat: str, url: str) -> dict[str, Any]:
+        """Send a link on its own with its preview: a card with the page's title, summary and picture, as when a
+        person pastes a link into Messages. Only for pages on the public internet; a page that gives no preview goes as
+        a plain link. Returns its guid."""
+        try:
+            return {"guid": await im.send_link(chat, url)}
         except Exception as error:
             raise _refusal(error) from error
 

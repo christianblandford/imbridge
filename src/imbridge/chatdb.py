@@ -125,6 +125,7 @@ class ChatDB:
         self._has_polls = False  # message.balloon_bundle_id and payload_data, likewise
         self._has_schedules = False  # message.schedule_type, schedule_state and is_delivered, likewise
         self._sticker = "0"  # attachment.is_sticker, likewise
+        self._shown = "1"  # attachments not hidden (hide_attachment: a balloon's own pictures, like a link preview's)
 
     def close(self) -> None:
         if self._db is not None:
@@ -348,6 +349,8 @@ class ChatDB:
             self._has_schedules = {"schedule_type", "schedule_state", "is_delivered"} <= message_columns
             if "is_sticker" in attachment_columns:
                 self._sticker = "a.is_sticker"
+            if "hide_attachment" in attachment_columns:
+                self._shown = "NOT COALESCE(a.hide_attachment, 0)"
             if "last_addressed_handle" in chat_columns:
                 self._chat_address = "c.last_addressed_handle"
             if "destination_caller_id" in message_columns:
@@ -429,7 +432,7 @@ class ChatDB:
         rows = self._query(
             f"SELECT j.message_id, a.guid, a.filename, a.mime_type, a.transfer_name, {self._sticker} AS is_sticker"
             " FROM message_attachment_join j"
-            f" JOIN attachment a ON a.ROWID = j.attachment_id WHERE j.message_id IN ({marks})",
+            f" JOIN attachment a ON a.ROWID = j.attachment_id WHERE j.message_id IN ({marks}) AND {self._shown}",
             rowids,
         )
         found: dict[int, list[Attachment]] = {}
