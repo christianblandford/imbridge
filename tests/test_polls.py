@@ -11,7 +11,7 @@ import pytest
 from helpers import ALEX, CREW, at
 from test_sending import actions, run
 
-from imbridge import IMBridge, PollOption, PollVote, RateLimited, SendNotAllowed, WrongChat
+from imbridge import IMBridge, PollOption, PollVote, RateLimited, SendNotAllowed, WrongChat, question_guid
 from imbridge.chatdb import ChatDB
 from imbridge.cli import describe
 from imbridge.polls import POLLS_BUNDLE, parse_poll
@@ -172,7 +172,22 @@ def test_sending_a_poll(chat_db):
     poll = requests[0]["data"]
     assert (poll["chatGuid"], poll["options"], poll["creatorHandle"]) == (CREW, ["Pizza", "Sushi"], "+15550002222")
     assert requests[1]["data"]["message"] == "Lunch?"
-    assert guid == "SENT-1"
+    assert guid == "SENT-1" and poll["guid"] is None and requests[1]["data"]["guid"] is None
+
+
+def test_a_poll_with_a_chosen_guid(chat_db):
+    chosen, path = "2f1b9a3e-6c4d-4e8f-9a0b-1c2d3e4f5a6b", on_my_number(chat_db)
+    _, requests = run(
+        path, lambda im: im.send_poll(CREW, ["Pizza", "Sushi"], question="Lunch?", guid=chosen), CREATED, allow=[CREW]
+    )
+    poll, question = requests[0]["data"], requests[1]["data"]
+    assert poll["guid"] == chosen.upper()
+    assert question["guid"] == question_guid(chosen) == str(uuid.uuid5(uuid.UUID(chosen), "question")).upper()
+    assert question_guid(chosen) == question_guid(chosen.upper())  # the same pair, however the guid is written
+    log = []
+    with pytest.raises(ValueError):
+        run(path, lambda im: im.send_poll(CREW, ["a", "b"], guid="poll-1"), CREATED, log, allow=[CREW])
+    assert log == []
 
 
 def test_a_poll_and_its_question_are_rate_limited_together(chat_db):

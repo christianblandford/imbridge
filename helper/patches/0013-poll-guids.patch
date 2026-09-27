@@ -1,0 +1,68 @@
+imbridge poll GUIDs: send-poll takes an optional "guid" (a UUID) and creates the poll message with it, like
+send-message since 0011-chosen-guids, so a caller that recorded it can tell after a timeout whether the poll went out,
+and resend it without a duplicate. The UUID check moves into IMBChosenGuid, which send-link now shares.
+
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+index 6fded0b..d543cb8 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
++++ b/Messages/MacOS-11+/BlueBubblesHelper/BlueBubblesHelper.m
+@@ -106,6 +106,12 @@ static void IMBReply(NSString *transaction, NSDictionary *reply) {
+     }
+ }
+ 
++// A message GUID the caller chose (a UUID, uppercased as IMCore writes them), or nil to let IMCore pick one.
++static NSString *IMBChosenGuid(id value) {
++    BOOL uuid = [value isKindOfClass:[NSString class]] && [[NSUUID alloc] initWithUUIDString:value] != nil;
++    return uuid ? [value uppercaseString] : nil;
++}
++
+ static BOOL IMBStrings(id value, NSUInteger minimum) {
+     if (![value isKindOfClass:[NSArray class]] || [value count] < minimum) {
+         return NO;
+@@ -131,8 +137,9 @@ static BOOL IMBStrings(id value, NSUInteger minimum) {
+     return [NSURL URLWithString:[NSString stringWithFormat:@"data:,%@%@", encoded, query]];
+ }
+ 
+-// Sends a poll offering these options; replies with its GUID, session identifier and option identifiers.
+-static void IMBSendPoll(IMChat *chat, id options, id creator, NSString *transaction) {
++// Sends a poll offering these options, as the message guid if one is given; replies with its GUID, session identifier
++// and option identifiers.
++static void IMBSendPoll(IMChat *chat, id options, id creator, id guid, NSString *transaction) {
+     if (!IMBStrings(options, 2) || ![creator isKindOfClass:[NSString class]] || [creator length] == 0) {
+         IMBReply(transaction, @{@"error": @"A poll needs at least two options and a creatorHandle"});
+         return;
+@@ -168,7 +175,7 @@ static void IMBSendPoll(IMChat *chat, id options, id creator, NSString *transact
+                              @"__kIMBreadcrumbTextMarkerAttributeName": @"Sent a poll",
+                              @"__kIMBreadcrumbTextOptionFlags": @0}];
+         IMMessage *poll = [[IMMessage alloc] initWithSender:nil time:nil text:body messageSubject:nil
+-                                          fileTransferGUIDs:@[] flags:0x100005 error:nil guid:nil subject:nil
++                                          fileTransferGUIDs:@[] flags:0x100005 error:nil guid:IMBChosenGuid(guid) subject:nil
+                                             balloonBundleID:IMBPollsBundle payloadData:payload
+                                       expressiveSendStyleID:nil];
+         [chat sendMessage:poll];
+@@ -486,7 +493,6 @@ static void IMBSendLink(IMChat *chat, NSDictionary *data, NSString *transaction)
+         IMBReply(transaction, @{@"error": @"A link needs url, payload and attachments"});
+         return;
+     }
+-    BOOL uuid = [chosen isKindOfClass:[NSString class]] && [[NSUUID alloc] initWithUUIDString:chosen] != nil;
+     @try {
+         IMFileTransferCenter *center = [IMFileTransferCenter sharedInstance];
+         NSMutableArray *transfers = [NSMutableArray array];
+@@ -506,7 +512,7 @@ static void IMBSendLink(IMChat *chat, NSDictionary *data, NSString *transaction)
+             @"__kIMLinkIsRichLinkAttributeName": @YES, @"__kIMMessagePartAttributeName": @0}];
+         IMMessage *message = [[IMMessage alloc] initWithSender:nil time:nil text:body messageSubject:nil
+                                              fileTransferGUIDs:transfers flags:0x100005 error:nil
+-                                                          guid:(uuid ? [chosen uppercaseString] : nil)
++                                                          guid:IMBChosenGuid(chosen)
+                                                        subject:nil balloonBundleID:IMBLinkBalloon payloadData:payload
+                                          expressiveSendStyleID:nil];
+         message.messageSummaryInfo = @{@"amc": @0, @"ust": @YES};
+@@ -1013,7 +1019,7 @@ -(void) handleServerEvent: (NSString*)event data: (NSDictionary*)data transactio
+     } else if ([event isEqualToString:@"send-poll"]) {
+         IMChat *chat = [[BlueBubblesHelper sharedInstance] getIMChatFromGuid:data[@"chatGuid"] transaction:transaction];
+         if (chat != nil) {
+-            IMBSendPoll(chat, data[@"options"], data[@"creatorHandle"], transaction);
++            IMBSendPoll(chat, data[@"options"], data[@"creatorHandle"], data[@"guid"], transaction);
+         }
+     // imbridge: vote in a poll
+     } else if ([event isEqualToString:@"send-poll-vote"]) {

@@ -127,6 +127,11 @@ def _chosen(guid: str | None) -> str | None:
         raise ValueError(f"{guid!r} isn't a UUID; make one with str(uuid.uuid4())") from None
 
 
+def question_guid(poll_guid: str) -> str:
+    """The GUID send_poll gives the question it sends after a poll whose GUID you chose: a UUID made from the poll's."""
+    return str(uuid.uuid5(uuid.UUID(poll_guid), "question")).upper()
+
+
 def _sticker_file(path: str | Path) -> Path:
     source = Path(path).expanduser()
     if not source.is_file():
@@ -303,9 +308,9 @@ class Chat:
             raise WrongChat(f"message {found.guid} is in {found.chat_guid}, not in this chat ({self.guid})")
         await self._bridge.cancel_scheduled(message)
 
-    async def send_poll(self, options: Iterable[str], *, question: str | None = None) -> str:
+    async def send_poll(self, options: Iterable[str], *, question: str | None = None, guid: str | None = None) -> str:
         """Send a poll offering these options, and the question as a message after it; see IMBridge.send_poll."""
-        return await self._bridge.send_poll(self.guid, options, question=question)
+        return await self._bridge.send_poll(self.guid, options, question=question, guid=guid)
 
     async def vote(self, poll: Message | str, *options: str) -> str | None:
         """Vote for options in one of this chat's polls, keeping your other choices; see IMBridge.vote."""
@@ -514,13 +519,19 @@ class IMBridge:
         self._remember(sent, chat_guid)
         return sent
 
-    async def send_poll(self, chat: str, options: Iterable[str], *, question: str | None = None) -> str:
+    async def send_poll(
+        self, chat: str, options: Iterable[str], *, question: str | None = None, guid: str | None = None
+    ) -> str:
         """Send a poll offering these options (two or more) to an allowed chat; returns the poll message's GUID.
 
         Messages never shows a poll's title, so a question goes out as its own message right after the poll, as
         Messages sends it. Both count toward the rate limits, and both are checked before either is sent. People
         need iOS 26 or macOS 26 or later to see the poll and vote.
+
+        guid is one you choose for the poll, as in send(). The question's GUID then follows from it (question_guid),
+        so sending the pair again with the same guid delivers neither twice.
         """
+        guid = _chosen(guid)
         choices = [option.strip() for option in options]
         if len(choices) < 2 or not all(choices):
             raise ValueError("a poll needs at least two options, none of them empty")
@@ -534,12 +545,13 @@ class IMBridge:
         question = (question or "").strip()
         for _ in range(2 if question else 1):
             self._guard.record_send(chat_guid)
-        result = await self._request("send-poll", {"chatGuid": chat_guid, "options": choices, "creatorHandle": creator})
+        request = {"chatGuid": chat_guid, "options": choices, "creatorHandle": creator, "guid": guid}
+        result = await self._request("send-poll", request)
         sent = result.get("identifier")
         self._recent.append((time.monotonic(), chat_guid, f"poll:{result.get('sessionIdentifier')}"))
         self._remember(sent, chat_guid)
         if question:
-            await self._send_text(chat_guid, question)
+            await self._send_text(chat_guid, question, guid=question_guid(guid) if guid else None)
         return sent
 
     async def vote(self, poll: Message | str, *options: str, chat: str | None = None) -> str | None:

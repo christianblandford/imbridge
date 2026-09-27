@@ -12,6 +12,9 @@
   sends, and the recipient saw the preview.
 - Link previews, read: a link sent with a preview arrives with `Message.link` (a `LinkPreview`: url, title, summary,
   site name, original url), read from the archived RichLink Messages stores with it.
+- `send_poll()` takes a `guid` you choose, like `send()` (helper/patches/0013-poll-guids.patch). The question sent
+  after the poll gets a GUID made from it, `question_guid(guid)`, so resending the pair with the same `guid` delivers
+  neither twice. Verified live: a retry with the same `guid` left one poll and one question.
 - `Message.attachments` leaves out attachments Messages hides: the pictures behind a balloon, like a link preview's or
   an iMessage app's, which aren't anything the sender attached.
 

@@ -4,7 +4,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from .addresses import ANY_ADDRESS, AddressNotChosen, WrongAddress
 from .chatdb import Attachment, ChatDB, ChatInfo, FullDiskAccessError, GroupEvent, Message
-from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, SendLaterFailed, WrongChat
+from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, SendLaterFailed, WrongChat, question_guid
 from .guard import ANY_CHAT, NewContact, RateLimited, SendNotAllowed
 from .links import LinkPreview
 from .locations import Location
@@ -53,4 +53,5 @@ __all__ = [
     "Span",
     "TEXT_EFFECTS",
     "WrongChat",
+    "question_guid",
 ]

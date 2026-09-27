@@ -275,9 +275,11 @@ and rate limits apply when it's scheduled, so disallowing the chat afterwards do
 get a scheduled message at once, and checks that Messages really held each message in the right chat
 (`SendLaterFailed` if not).
 
-**Retrying safely.** `send()`, `reply()`, `send_file()` and `send_link()` take a `guid` you choose (a UUID, like
-`str(uuid.uuid4())`). Record it before sending; after a timeout or a crash, `im.message(guid)` tells you whether the
-message went out, and sending again with the same `guid` doesn't deliver it twice: Messages drops the duplicate.
+**Retrying safely.** `send()`, `reply()`, `send_file()`, `send_link()` and `send_poll()` take a `guid` you choose (a
+UUID, like `str(uuid.uuid4())`). Record it before sending; after a timeout or a crash, `im.message(guid)` tells you
+whether the message went out, and sending again with the same `guid` doesn't deliver it twice: Messages drops the
+duplicate. A poll's question goes out as a message of its own, with a GUID made from the poll's
+(`question_guid(guid)`), so resending the pair is safe too.
 
 **Starting conversations.** `im.send()` to a phone number or email you have no conversation with starts one, over
 iMessage if they have it and SMS otherwise. They have to be allowed: `IMBridge(allow=[NewContact("+15557654321")])`
@@ -503,6 +505,7 @@ applies imbridge's changes in order:
 10. Sticker tapbacks
 11. Message GUIDs the caller chooses
 12. Link previews: loading one with LinkPresentation, and sending it
+13. The caller's GUID for polls too
 
 `helper/build.sh` builds it with only the Xcode Command Line Tools. Released wheels include the built helper.
 
