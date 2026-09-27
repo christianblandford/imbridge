@@ -81,6 +81,7 @@ class FakeMessages:
         self.replies = replies or {}
         self.requests: list[dict] = []
         self.build = build  # the helper build it says it is, if any
+        self.writer = None  # the connection, once made: push() sends events on it, as the helper does unasked
 
     async def run(self) -> None:
         import asyncio
@@ -94,6 +95,7 @@ class FakeMessages:
             except OSError:
                 await asyncio.sleep(0.02)
         ping = {"event": "ping", "process": "com.apple.MobileSMS", **({"build": self.build} if self.build else {})}
+        self.writer = writer
         writer.write(json.dumps(ping).encode() + b"\r\n")
         await writer.drain()
         while line := await reader.readline():
@@ -106,3 +108,10 @@ class FakeMessages:
             reply.update(answer(request) if callable(answer) else answer)
             writer.write(json.dumps(reply).encode() + b"\r\n")
             await writer.drain()
+
+    async def push(self, event: dict) -> None:
+        """Send an event unasked, like the helper's typing notices."""
+        import json
+
+        self.writer.write(json.dumps(event).encode() + b"\r\n")
+        await self.writer.drain()

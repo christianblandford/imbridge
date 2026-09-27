@@ -216,6 +216,8 @@ async with IMBridge(allow=["+15551234567"]) as im:
     poll = await chat.send_poll(["Pizza", "Sushi"], question="Lunch?")
     await chat.vote(poll, "Pizza")                        # keeps your other choices; chat.unvote(poll, "Pizza")
     await chat.typing()                                   # typing indicator on; chat.typing(False) turns it off
+    chat.is_typing()                                      # are they typing right now? (see Typing, below)
+    await chat.wait_while_typing(timeout=30)              # before replying: let them finish their thought
     await chat.edit(guid, "fixed a typo")                 # your own messages: up to 5 edits, within 15 minutes
     await chat.unsend(guid)                               # within 2 minutes
     await chat.mark_read()
@@ -321,6 +323,12 @@ Every `Message` has these fields:
 | `event` | set when the row is a change to a group rather than a message (streams and history include these with `include_events=True`): `kind` (`added`, `removed`, `left`, `renamed`, `photo_changed`, `photo_removed`, `other`), `person` (who was added, removed or left; `None` is you), `name` (for `renamed`) and `code`. `sender` is who made the change. |
 | `address` | which of your addresses it was sent to (or, for your own messages, sent from) |
 
+**Typing.** `is_typing(chat)`, `wait_while_typing(chat, timeout=30)` and `async for change in
+im.typing_changes()` follow the other person's typing bubble, as the helper inside Messages reports it; so do
+`imbridge watch --typing` and the MCP tool `typing_status`. Best effort: on macOS 15 and earlier the helper sees each
+bubble arrive. On macOS 26 and later it only sees the bubbles Messages draws in its conversation list, and in testing
+on macOS 27, with Messages running hidden, it saw none.
+
 **Contact names.** imbridge reads names from your Contacts (read-only; the Full Disk Access that reads `chat.db`
 covers it): a message's `sender_name`, and a chat's `names` for the people in it. The MCP server shows them too, so a
 model sees "Alex Rivera" rather than a number. A number matches a contact the same strict way imbridge matches
@@ -393,7 +401,7 @@ imbridge history +15551234567 [-n 20] [--before GUID | --after GUID] [--json]
 imbridge search "dinner" [--chat CHAT] [-n 20] [--before GUID] [--json]   # newest first
 imbridge poll GUID [--json]                          # a poll's question, options and votes
 imbridge focus +15551234567                          # whether they have notifications silenced
-imbridge watch [--chat CHAT] [--json] [--from-me] [--events]   # stream new messages; --json: one object per line
+imbridge watch [--chat CHAT] [--json] [--from-me] [--events] [--typing]   # stream new messages as they arrive
 imbridge mcp [--address ADDRESS]                     # the MCP server, over stdio (pip install "imbridge[mcp]")
 imbridge <command> --address +15550002222           # start, the sends, history, watch and mcp take it
 ```
@@ -436,6 +444,7 @@ itself.
 | `send_later`, `list_scheduled`, `cancel_scheduled` | Send Later: schedule a message, see what's waiting, cancel it |
 | `edit_message`, `unsend_message` | change or take back a message it sent, within iMessage's limits |
 | `show_typing` | the typing indicator |
+| `typing_status` | whether someone in a chat is typing right now (best effort on macOS 26+) |
 | `whoami` | the address it answers on and the chats it may send to |
 
 Sending goes through the same allowlist, address rules and rate limits as the library. A refused send tells the model

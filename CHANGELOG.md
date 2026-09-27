@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Incoming typing: `im.is_typing(chat)`, `await im.wait_while_typing(chat, timeout=30)` (so a bot doesn't answer
+  half a thought) and `im.typing_changes()` follow the other person's typing bubble from the helper's notices, once
+  per change (Messages repeats "not typing" whenever it redraws its list), letting a bubble go after a minute of
+  silence as Messages does. `imbridge watch --typing` and the MCP tool `typing_status` show it. Best effort on macOS
+  26 and later: there the helper only sees the bubbles Messages draws in its conversation list, and live tests on
+  macOS 27 with Messages hidden saw none.
 - Contact names: `Message.sender_name` and `Chat.names` come from your Contacts (read-only, under the same Full Disk
   Access as chat.db), matched with the same strict rules as everywhere else in imbridge; a number on cards with
   different names gets none. `im.contact_name(address)` looks one up, and `im.chats(query=...)` (`imbridge chats

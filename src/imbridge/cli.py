@@ -11,7 +11,7 @@ from datetime import datetime
 from . import __version__
 from .addresses import ANY_ADDRESS, AddressNotChosen, WrongAddress, contact_address
 from .chatdb import FullDiskAccessError, Message, MessageNotFound
-from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, SendLaterFailed, WrongChat
+from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, SendLaterFailed, TypingChange, WrongChat
 from .doctor import run_checks
 from .guard import ANY_LINE, RateLimited, SendNotAllowed, read_allowed, write_allowed
 from .polls import PollResults
@@ -253,9 +253,28 @@ async def _send(args: argparse.Namespace) -> int:
 async def _watch(args: argparse.Namespace) -> int:
     im = _bridge(args, inject=False)
     stream = im.chat(args.chat).messages if args.chat else im.all_messages
-    async for message in stream(include_from_me=args.from_me, include_events=args.events):
-        _print_message(message, args.json)
+
+    async def messages() -> None:
+        async for message in stream(include_from_me=args.from_me, include_events=args.events):
+            _print_message(message, args.json)
+
+    async def typing() -> None:
+        async for change in im.typing_changes(args.chat):
+            _print_typing(im, change, args.json)
+
+    await (asyncio.gather(messages(), typing()) if args.typing else messages())
     return 0
+
+
+def _print_typing(im: IMBridge, change: TypingChange, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps({"typing": change.typing, "chat": change.chat_guid, "at": change.at.isoformat()}), flush=True)
+        return
+    chat = im.chat(change.chat_guid)
+    who = "someone" if chat.is_group else _label(chat)
+    doing = "is typing" if change.typing else "stopped typing"
+    where = f" in {chat.name or chat.guid}" if chat.is_group else ""
+    print(f"{change.at.astimezone().strftime('%H:%M:%S')}  … {who} {doing}{where}", flush=True)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -379,6 +398,7 @@ def _parser() -> argparse.ArgumentParser:
     watch.add_argument("--json", action="store_true", help="one JSON object per line")
     watch.add_argument("--from-me", action="store_true", help="include messages you send")
     watch.add_argument("--events", action="store_true", help="include changes to groups (people added, renames...)")
+    watch.add_argument("--typing", action="store_true", help="include people starting and stopping typing")
 
     commands.add_parser("mcp", parents=[mine], help="run the MCP server (stdio) for Claude, Cursor and other clients")
     return parser

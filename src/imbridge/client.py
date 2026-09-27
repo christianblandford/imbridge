@@ -62,6 +62,7 @@ SCHEDULE_HELD = 2  # message.schedule_state once Apple's servers hold a Send Lat
 STICKER_TYPES = (".png", ".heic", ".heics", ".gif", ".jpg", ".jpeg", ".webp")
 MAX_POLL_BYTES = 4096  # a poll's options, as Messages encodes them, must fit in this
 LINK_TIMEOUT = 15.0  # seconds Messages gets to load a link's preview before it goes as a plain link
+TYPING_TIMEOUT = 60.0  # seconds a typing bubble lasts with no news: Messages lets one go about then
 # The macOS each feature needs on this Mac; the people you message need the matching iOS or macOS to see it. Messages
 # on an older macOS doesn't even keep a poll someone sends: only its "Sent a poll" text.
 FEATURES = {
@@ -75,6 +76,15 @@ FEATURES = {
     "send_later": 15,
     "polls": 26,
 }
+
+
+@dataclass(frozen=True)
+class TypingChange:
+    """Someone started (typing=True) or stopped typing in a chat: Messages' typing bubble appearing or going."""
+
+    chat_guid: str
+    typing: bool
+    at: datetime
 
 
 @dataclass
@@ -318,6 +328,18 @@ class Chat:
     async def typing(self, on: bool = True) -> None:
         await self._bridge.typing(self.guid, on)
 
+    def is_typing(self) -> bool:
+        """Whether someone is typing in this chat right now: see IMBridge.is_typing."""
+        return self._bridge.is_typing(self.guid)
+
+    async def wait_while_typing(self, timeout: float = 30.0) -> bool:
+        """Wait until nobody is typing here: see IMBridge.wait_while_typing."""
+        return await self._bridge.wait_while_typing(self.guid, timeout)
+
+    def typing_changes(self) -> AsyncIterator[TypingChange]:
+        """Typing bubbles appearing and going in this chat: see IMBridge.typing_changes."""
+        return self._bridge.typing_changes(self.guid)
+
     async def mark_read(self) -> None:
         await self._bridge.mark_read(self.guid)
 
@@ -455,7 +477,11 @@ class IMBridge:
         self.contacts = Contacts() if contacts else None
         self.db = ChatDB(chat_db, names=self.contacts.name if self.contacts else None)
         self._guard = SendGuard(allow, resolve=self.resolve_chat, max_per_chat=max_per_chat, max_total=max_total)
-        self._server = HelperServer(port or config.helper_port(), token or config.helper_token())
+        self._server = HelperServer(
+            port or config.helper_port(), token or config.helper_token(), on_event=self._helper_event
+        )
+        self._typing: dict[str, float] = {}  # chat GUID -> when its typing bubble last showed (time.monotonic)
+        self._typing_listeners: set[asyncio.Queue[TypingChange]] = set()
         # The chat of each message we sent, so replies and tapbacks work before chat.db catches up.
         self._chat_of: dict[str, str] = {}
         self._helper_lock = asyncio.Lock()  # so concurrent sends don't each relaunch Messages
@@ -504,6 +530,78 @@ class IMBridge:
         if wanted:
             found = [info for info in found if _chat_matches(info, wanted)]
         return [Chat(self, info) for info in found[offset : offset + limit]]
+
+    def is_typing(self, chat: str) -> bool:
+        """Whether someone is typing in a chat right now, as Messages' typing bubble shows. The helper is what sees
+        it, so this knows only while connected (after start(), or any send); a bubble lasts until they send, stop,
+        or a minute passes."""
+        return self._typing_now(self.resolve_chat(chat))
+
+    async def wait_while_typing(self, chat: str, timeout: float = 30.0) -> bool:
+        """Wait until nobody is typing in a chat, up to timeout seconds. True once they've stopped (or if they
+        weren't typing), False if they still are. Call it before answering, so a reply doesn't land in the middle of
+        what someone is still writing."""
+        chat_guid = self.resolve_chat(chat)
+        await self._ensure_helper()
+        deadline = time.monotonic() + timeout
+        while self._typing_now(chat_guid):
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.1)
+        return True
+
+    async def typing_changes(self, chat: str | None = None) -> AsyncIterator[TypingChange]:
+        """Typing bubbles appearing and going, as it happens: in one chat, or in every chat on this program's
+        address. A bubble that shows no news for TYPING_TIMEOUT seconds ends with a stop."""
+        wanted = self.resolve_chat(chat) if chat else None
+        await self._ensure_helper()
+        queue: asyncio.Queue[TypingChange] = asyncio.Queue()
+        self._typing_listeners.add(queue)
+        try:
+            while True:
+                try:
+                    change = await asyncio.wait_for(queue.get(), timeout=5)
+                except (TimeoutError, asyncio.TimeoutError):
+                    self._expire_typing()
+                    continue
+                if (wanted is None or change.chat_guid == wanted) and self._on_my_address(change.chat_guid):
+                    yield change
+        finally:
+            self._typing_listeners.discard(queue)
+
+    def _helper_event(self, event: dict[str, Any]) -> None:
+        """What the helper reports unasked; for now, typing bubbles appearing and going."""
+        kind, chat_guid = event.get("event"), event.get("guid")
+        if kind in ("started-typing", "stopped-typing") and isinstance(chat_guid, str):
+            self._set_typing(chat_guid, kind == "started-typing")
+
+    def _set_typing(self, chat_guid: str, typing: bool) -> None:
+        was = self._typing_now(chat_guid)
+        if typing:
+            self._typing[chat_guid] = time.monotonic()
+        else:
+            self._typing.pop(chat_guid, None)
+        if typing != was:  # Messages repeats itself (a redrawn conversation list re-says "not typing")
+            change = TypingChange(chat_guid, typing, datetime.now(timezone.utc))
+            for queue in self._typing_listeners:
+                queue.put_nowait(change)
+
+    def _typing_now(self, chat_guid: str) -> bool:
+        started = self._typing.get(chat_guid)
+        return started is not None and time.monotonic() - started < TYPING_TIMEOUT
+
+    def _expire_typing(self) -> None:
+        for chat_guid in [guid for guid in self._typing if not self._typing_now(guid)]:
+            del self._typing[chat_guid]
+            change = TypingChange(chat_guid, False, datetime.now(timezone.utc))
+            for queue in self._typing_listeners:
+                queue.put_nowait(change)
+
+    def _on_my_address(self, chat_guid: str) -> bool:
+        if self._address_key is None:
+            return True
+        info = self.db.chat(chat_guid)
+        return info is not None and address_key(info.address) == self._address_key
 
     def contact_name(self, address: str) -> str | None:
         """The name on someone's card in your Contacts (a phone number or email), or None."""

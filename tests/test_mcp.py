@@ -41,7 +41,7 @@ def test_tools_are_described_and_annotated(chat_db):
         "list_chats", "read_messages", "search_messages", "check_messages", "read_poll", "send_message", "reply",
         "react",
         "send_poll", "vote", "send_location", "send_link", "send_later", "list_scheduled", "cancel_scheduled",
-        "edit_message", "unsend_message", "show_typing", "focus_status", "whoami",
+        "edit_message", "unsend_message", "show_typing", "typing_status", "focus_status", "whoami",
     }
     assert all(tool.description for tool in tools.values())
     assert tools["read_messages"].annotations.read_only_hint

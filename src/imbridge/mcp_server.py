@@ -222,6 +222,16 @@ def build_server(im: IMBridge) -> MCPServer:
         except Exception as error:
             raise _refusal(error) from error
 
+    @server.tool(annotations=READS)
+    async def typing_status(chat: str) -> dict[str, Any]:
+        """Whether someone in a chat is typing right now (Messages' typing bubble). When check_messages finds nothing
+        new but they're typing, more is on its way: wait for it with check_messages and wait_seconds."""
+        try:
+            await im.start()  # typing is seen through the helper inside Messages
+            return {"chat": chat, "typing": im.is_typing(chat)}
+        except Exception as error:
+            raise _refusal(error) from error
+
     @tool("polls", annotations=READS)
     def read_poll(message_guid: str) -> dict[str, Any]:
         """A poll's question, options, and votes per option with who cast them ("me" is the user). Takes the poll's
