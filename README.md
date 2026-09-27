@@ -220,6 +220,8 @@ async with IMBridge(allow=["+15551234567"]) as im:
     await chat.unsend(guid)                               # within 2 minutes
     await chat.mark_read()
     chat.history(50)                                      # latest messages, oldest first
+    chat.history(50, before=oldest)                       # the 50 before that (after=... reads on instead)
+    chat.search("dinner")                                 # messages containing it, newest first
     async for message in chat.messages(include_from_me=False):
         ...
     async for message in chat.changes():                  # messages as they're edited or unsent
@@ -231,6 +233,7 @@ async with IMBridge(allow=["+15551234567"]) as im:
     await im.send("+15557654321", "hi")                   # allowed as NewContact("+15557654321"): starts a chat
     im.chats(20)                                          # recent chats, newest first; each has .can_send
     im.message(guid)                                      # one message, or None
+    im.search("dinner", limit=20, before=last)            # every chat: newest first, then page on
     im.poll(guid)                                         # a poll's options, votes and question (from any of its messages)
     await im.focus_status("+15551234567")                 # True if their Focus silences notifications; None if not shared
     async for message in im.all_messages():               # every chat: be deliberate about who you answer
@@ -318,8 +321,8 @@ Every `Message` has these fields:
 
 **Options.** `IMBridge(allow=..., address=..., max_per_chat=10, max_total=30)` are covered above. `inject=True` loads the helper
 into Messages whenever none answers; pass `inject=False` if something else manages Messages. `poll_interval` (default
-0.5 seconds) sets how often streams check for new messages. Reading (streams, `history`, `chats`, `message`) only
-touches `chat.db`, so it works without the helper.
+0.5 seconds) sets how often streams check for new messages. Reading (streams, `history`, `search`, `chats`,
+`message`) only touches `chat.db`, so it works without the helper.
 
 **Errors.** `SendNotAllowed` means the chat isn't allowed. `RateLimited` means a limit was hit. `EditLimit` means
 iMessage's own limits on editing or unsending have passed (`kind` says which). `SendLaterFailed` means Messages
@@ -378,7 +381,8 @@ imbridge vote GUID Pizza [--remove]                  # the poll's GUID; keeps yo
 imbridge reply GUID "inline reply"
 imbridge react GUID 🔥 [--remove]
 imbridge chats [-n 20] [--json]
-imbridge history +15551234567 [-n 20] [--json]
+imbridge history +15551234567 [-n 20] [--before GUID | --after GUID] [--json]
+imbridge search "dinner" [--chat CHAT] [-n 20] [--before GUID] [--json]   # newest first
 imbridge poll GUID [--json]                          # a poll's question, options and votes
 imbridge focus +15551234567                          # whether they have notifications silenced
 imbridge watch [--chat CHAT] [--json] [--from-me] [--events]   # stream new messages; --json: one object per line
@@ -409,8 +413,9 @@ itself.
 
 | tool | |
 |---|---|
-| `list_chats` | recent chats, and whether the agent may send in each (`can_send`) |
-| `read_messages` | a chat's latest messages |
+| `list_chats` | recent chats, and whether the agent may send in each (`can_send`); `offset` pages on |
+| `read_messages` | a chat's latest messages; `before` and `after` page through its history |
+| `search_messages` | messages containing some text, in one chat or all, newest first |
 | `check_messages` | messages since the last check; `wait_seconds` waits for a reply |
 | `read_poll` | a poll's question, options and votes |
 | `focus_status` | whether someone has notifications silenced by a Focus |

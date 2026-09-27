@@ -3,7 +3,7 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from .addresses import ANY_ADDRESS, AddressNotChosen, WrongAddress
-from .chatdb import Attachment, ChatDB, ChatInfo, FullDiskAccessError, GroupEvent, Message
+from .chatdb import Attachment, ChatDB, ChatInfo, FullDiskAccessError, GroupEvent, Message, MessageNotFound
 from .client import (
     EFFECTS,
     FEATURES,
@@ -53,6 +53,7 @@ __all__ = [
     "LinkPreview",
     "Location",
     "Message",
+    "MessageNotFound",
     "NewContact",
     "Poll",
     "PollOption",

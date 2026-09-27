@@ -7,9 +7,10 @@ binary itself for a background service). The database is opened read-only.
 from __future__ import annotations
 
 import plistlib
+import re
 import sqlite3
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -112,6 +113,10 @@ class ChatInfo:
         return data
 
 
+class MessageNotFound(LookupError):
+    """No message has that GUID."""
+
+
 class ChatDB:
     def __init__(self, path: Path | str = CHAT_DB) -> None:
         self.path = Path(path)
@@ -160,10 +165,67 @@ class ChatDB:
         found = self._messages("m.guid = ?", (guid,), fallbacks=True)
         return found[0] if found else None
 
-    def history(self, chat_guid: str, limit: int = 50, *, events: bool = False) -> list[Message]:
-        """The chat's latest messages, oldest first; with events, group changes too."""
-        found = self._messages(f"c.guid = ? AND {_kinds(events)} ORDER BY m.ROWID DESC LIMIT ?", (chat_guid, limit))
-        return found[::-1]
+    def history(
+        self,
+        chat_guid: str,
+        limit: int = 50,
+        *,
+        events: bool = False,
+        before: str | None = None,
+        after: str | None = None,
+    ) -> list[Message]:
+        """The chat's latest messages, oldest first; with events, group changes too. before and after (message
+        GUIDs) move the window: the messages just before one, or just after one."""
+        where, params = f"c.guid = ? AND {_kinds(events)}", (chat_guid,)
+        if before is not None:
+            where, params = where + " AND m.ROWID < ?", (*params, self._rowid(before))
+        if after is not None:
+            where, params = where + " AND m.ROWID > ?", (*params, self._rowid(after))
+            return self._messages(f"{where} ORDER BY m.ROWID LIMIT ?", (*params, limit))
+        return self._messages(f"{where} ORDER BY m.ROWID DESC LIMIT ?", (*params, limit))[::-1]
+
+    def search(self, query: str, *, chat_guid: str | None = None, before: str | None = None) -> Iterator[Message]:
+        """Messages whose text contains query, ignoring case, newest first (tapbacks aside): in one chat, or all.
+        before (a message's GUID) pages on: only messages older than that one. Lazy, so take as many as you need."""
+        needle = query.strip().casefold()
+        if not needle:
+            raise ValueError("search for some text")
+        self._connect()
+        # Most text is in message.text, which SQLite narrows down; the rest only in attributedBody, which has to be
+        # decoded here. Every candidate is then compared in Python, since SQLite's LIKE ignores case in ASCII only.
+        ascii_part = max(re.findall(r"[ -~]+", needle), key=len, default="").strip()
+        if len(ascii_part) >= min(3, len(needle)):
+            matches, params = "m.text LIKE ? ESCAPE '\\'", [_like(ascii_part)]
+        else:  # no case to ignore in most such text (emoji, CJK): look for it as written, and in a few cases
+            variants = list(dict.fromkeys((query.strip(), needle, query.strip().upper(), query.strip().title())))
+            matches, params = " OR ".join(["instr(m.text, ?) > 0"] * len(variants)), variants
+        where = f"m.item_type = 0 AND m.associated_message_type = 0 AND (({matches}) OR m.text IS NULL)"
+        joins = ""
+        if chat_guid is not None:
+            joins = " JOIN chat_message_join j ON j.message_id = m.ROWID JOIN chat c ON c.ROWID = j.chat_id"
+            where += " AND c.guid = ?"
+            params.append(chat_guid)
+        last = self._rowid(before) if before is not None else None
+        while True:
+            bound = " AND m.ROWID < ?" if last is not None else ""
+            rows = self._query(
+                f"SELECT m.ROWID, m.text, m.attributedBody FROM message m{joins} WHERE {where}{bound}"
+                " ORDER BY m.ROWID DESC LIMIT 500",
+                (*params, *([last] if last is not None else [])),
+            )
+            if not rows:
+                return
+            last = rows[-1][0]
+            found = [row[0] for row in rows if needle in (row[1] or attributed_body_text(row[2]) or "").casefold()]
+            if found:
+                marks = ",".join("?" * len(found))
+                yield from self._messages(f"m.ROWID IN ({marks}) ORDER BY m.ROWID DESC", tuple(found))
+
+    def _rowid(self, guid: str) -> int:
+        rows = self._query("SELECT ROWID FROM message WHERE guid = ?", (guid,))
+        if not rows:
+            raise MessageNotFound(f"there's no message {guid}")
+        return rows[0][0]
 
     def scheduled(self, chat_guid: str | None = None) -> list[Message]:
         """Your messages waiting in Send Later (in one chat, or all), soonest first."""
@@ -250,15 +312,18 @@ class ChatDB:
             f" {self._chat_address} AS address, {self._last_activity} AS last_date FROM chat c {clause}",
             params,
         )
+        members: dict[int, list[str]] = {}
+        for start in range(0, len(rows), 500):  # everyone in these chats, in one query per 500 chats
+            batch = [row["rowid"] for row in rows[start : start + 500]]
+            for chat_id, handle in self._query(
+                "SELECT j.chat_id, h.id FROM chat_handle_join j JOIN handle h ON h.ROWID = j.handle_id"
+                f" WHERE j.chat_id IN ({','.join('?' * len(batch))}) ORDER BY j.chat_id, h.ROWID",
+                tuple(batch),
+            ):
+                members.setdefault(chat_id, []).append(handle)
         chats = []
         for row in rows:
-            participants = tuple(
-                handle
-                for (handle,) in self._query(
-                    "SELECT h.id FROM chat_handle_join j JOIN handle h ON h.ROWID = j.handle_id WHERE j.chat_id = ?",
-                    (row["rowid"],),
-                )
-            )
+            participants = tuple(members.get(row["rowid"], ()))
             chats.append(
                 ChatInfo(
                     guid=row["guid"],
@@ -442,6 +507,11 @@ class ChatDB:
                 Attachment(row["guid"], path, row["mime_type"], row["transfer_name"], bool(row["is_sticker"]))
             )
         return {rowid: tuple(items) for rowid, items in found.items()}
+
+
+def _like(text: str) -> str:
+    """A LIKE pattern (with ESCAPE '\\') for text anywhere in a value."""
+    return "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
 
 def _kinds(events: bool) -> str:

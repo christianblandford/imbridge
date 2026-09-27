@@ -1,4 +1,4 @@
-"""The imbridge command: doctor, start, allow, send, reply, react, chats, history, watch, mcp."""
+"""The imbridge command: doctor, start, allow, send, reply, react, chats, history, search, watch, mcp."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from datetime import datetime
 
 from . import __version__
 from .addresses import ANY_ADDRESS, AddressNotChosen, WrongAddress, contact_address
-from .chatdb import FullDiskAccessError, Message
+from .chatdb import FullDiskAccessError, Message, MessageNotFound
 from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, SendLaterFailed, WrongChat
 from .doctor import run_checks
 from .guard import ANY_LINE, RateLimited, SendNotAllowed, read_allowed, write_allowed
@@ -360,7 +360,16 @@ def _parser() -> argparse.ArgumentParser:
     history = commands.add_parser("history", parents=[mine], help="show a chat's latest messages")
     history.add_argument("chat", help="phone number, email, group name, or chat GUID")
     history.add_argument("-n", type=int, default=20, help="how many (default 20)")
+    history.add_argument("--before", metavar="GUID", help="the messages just before this one (to page back)")
+    history.add_argument("--after", metavar="GUID", help="the messages just after this one")
     history.add_argument("--json", action="store_true", help="one JSON object per line")
+
+    search = commands.add_parser("search", parents=[mine], help="find messages containing some text, newest first")
+    search.add_argument("query")
+    search.add_argument("--chat", help="only this chat")
+    search.add_argument("-n", type=int, default=20, help="how many (default 20)")
+    search.add_argument("--before", metavar="GUID", help="only messages older than this one (to page on)")
+    search.add_argument("--json", action="store_true", help="one JSON object per line")
 
     watch = commands.add_parser("watch", parents=[mine], help="print new messages, tapbacks and replies as they arrive")
     watch.add_argument("--chat", help="only this chat")
@@ -413,8 +422,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"imbridge: {args.message} isn't a poll or a vote in one", file=sys.stderr)
                 return 1
             _print_poll(results, args.json)
+        elif args.command == "search":
+            for message in im.search(args.query, chat=args.chat, limit=args.n, before=args.before):
+                _print_message(message, args.json)
         else:  # history
-            for message in im.history(args.chat, args.n):
+            for message in im.history(args.chat, args.n, before=args.before, after=args.after):
                 _print_message(message, args.json)
         return 0
     except KeyboardInterrupt:
@@ -422,6 +434,7 @@ def main(argv: list[str] | None = None) -> int:
     except (
         FullDiskAccessError,
         ChatNotFound,
+        MessageNotFound,
         WrongChat,
         EditLimit,
         SendLaterFailed,

@@ -38,7 +38,8 @@ def add_message(path, guid, text, t):
 def test_tools_are_described_and_annotated(chat_db):
     tools = {tool.name: tool for tool in asyncio.run(server_for(chat_db).list_tools())}
     assert set(tools) == {
-        "list_chats", "read_messages", "check_messages", "read_poll", "send_message", "reply", "react",
+        "list_chats", "read_messages", "search_messages", "check_messages", "read_poll", "send_message", "reply",
+        "react",
         "send_poll", "vote", "send_location", "send_link", "send_later", "list_scheduled", "cancel_scheduled",
         "edit_message", "unsend_message", "show_typing", "focus_status", "whoami",
     }
@@ -59,6 +60,20 @@ def test_list_and_read(chat_db):
     assert [message["guid"] for message in messages] == ["M1", "M2", "M3", "M4"]
     assert messages[2]["reply_to"] == "M2"
     assert messages[3]["tapback"] == {"reaction": "love", "removed": False, "on": "M1"}
+
+
+def test_paging_and_search(chat_db):
+    server = server_for(chat_db)
+    assert [chat["chat"] for chat in call(server, "list_chats", limit=1, offset=1)] == [ALEX]
+    older = call(server, "read_messages", chat=ALEX, limit=2, before="M3")
+    assert [message["guid"] for message in older] == ["M1", "M2"]
+    around = call(server, "read_messages", chat=ALEX, limit=1, after="M1")
+    assert [message["guid"] for message in around] == ["M2"]
+    found = call(server, "search_messages", query="HEY")
+    assert [(message["guid"], message["chat"]) for message in found] == [("M1", ALEX)]
+    assert call(server, "search_messages", query="hey", chat="Crew") == []
+    with pytest.raises(ToolError):
+        call(server, "read_messages", chat=ALEX, before="NOT-A-MESSAGE")
 
 
 def test_check_messages_returns_each_new_message_once(chat_db):

@@ -6,6 +6,7 @@ import asyncio
 import base64
 import errno
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -257,9 +258,20 @@ class Chat:
         async for message in self._bridge._stream(since, include_from_me, self.guid, include_events):
             yield message
 
-    def history(self, limit: int = 50, *, include_events: bool = False) -> list[Message]:
-        """This chat's latest messages, oldest first."""
-        return self._bridge.history(self.guid, limit, include_events=include_events)
+    def history(
+        self,
+        limit: int = 50,
+        *,
+        include_events: bool = False,
+        before: Message | str | None = None,
+        after: Message | str | None = None,
+    ) -> list[Message]:
+        """This chat's latest messages, oldest first; before and after page (see IMBridge.history)."""
+        return self._bridge.history(self.guid, limit, include_events=include_events, before=before, after=after)
+
+    def search(self, query: str, *, limit: int = 20, before: Message | str | None = None) -> list[Message]:
+        """This chat's messages containing query, newest first: see IMBridge.search."""
+        return self._bridge.search(query, chat=self.guid, limit=limit, before=before)
 
     async def send(
         self, text: Text, *, effect: str | None = None, subject: str | None = None, guid: str | None = None
@@ -1121,11 +1133,32 @@ class IMBridge:
         async for message in self._changes(self.resolve_chat(chat) if chat else None, include_from_me):
             yield message
 
-    def history(self, chat: str, limit: int = 50, *, include_events: bool = False) -> list[Message]:
-        """A chat's latest messages to this program's address, oldest first."""
+    def history(
+        self,
+        chat: str,
+        limit: int = 50,
+        *,
+        include_events: bool = False,
+        before: Message | str | None = None,
+        after: Message | str | None = None,
+    ) -> list[Message]:
+        """A chat's latest messages to this program's address, oldest first. To page back, pass before: the oldest
+        message you have (or its GUID); an empty list means you've reached the start. after reads on from a message
+        instead: the ones just after it."""
         self._check_address()
-        found = self.db.history(self.resolve_chat(chat), limit, events=include_events)
+        older, newer = (value.guid if isinstance(value, Message) else value for value in (before, after))
+        found = self.db.history(self.resolve_chat(chat), limit, events=include_events, before=older, after=newer)
         return [message for message in found if self._admits(message, strict=False)]
+
+    def search(
+        self, query: str, *, chat: str | None = None, limit: int = 20, before: Message | str | None = None
+    ) -> list[Message]:
+        """Messages to this program's address whose text contains query (ignoring case), newest first: in one chat,
+        or in all of them. To page on, pass before: the last (oldest) message you got, or its GUID."""
+        self._check_address()
+        older = before.guid if isinstance(before, Message) else before
+        found = self.db.search(query, chat_guid=self.resolve_chat(chat) if chat else None, before=older)
+        return list(itertools.islice((m for m in found if self._admits(m, strict=False)), max(1, limit)))
 
     def mentions_me(self, message: Message) -> bool:
         """Whether a message @mentions this program's address (with no address set, any of your addresses): in a

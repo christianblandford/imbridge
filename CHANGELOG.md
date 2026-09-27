@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Search: `im.search(query, chat=None, limit=20, before=None)` and `chat.search(query)` find messages containing
+  some text (ignoring case), newest first, in one chat or all, including text Messages keeps only in the attributed
+  body. `imbridge search` and the MCP tool `search_messages` do the same. `before` pages on.
+- Paging: `history()` takes `before` (a message or GUID: the messages just before it) and `after` (the ones just
+  after it); so do `imbridge history` (`--before`, `--after`) and the MCP tool `read_messages`, and `list_chats`
+  takes an `offset`. An unknown GUID raises `MessageNotFound`.
 - Link previews: `chat.send_link(url, guid=None)`, `imbridge send-link` and the MCP tool `send_link` send a link
   with its preview card (title, summary, pictures), the way Messages sends a pasted link
   (helper/patches/0012-link-previews.patch). Messages loads the page with LinkPresentation and archives it with

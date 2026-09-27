@@ -163,19 +163,38 @@ def build_server(im: IMBridge) -> MCPServer:
         pass  # check_messages reports it when called
 
     @server.tool(annotations=READS)
-    def list_chats(limit: int = 20) -> list[dict[str, Any]]:
-        """Recent iMessage chats, newest first. `chat` identifies each one; `can_send` says if you may send there."""
+    def list_chats(limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+        """Recent iMessage chats, newest first. `chat` identifies each one; `can_send` says if you may send there.
+        For older chats, raise `offset` by `limit`."""
         try:
-            return [_chat(chat) for chat in im.chats(max(1, min(limit, 100)))]
+            offset = max(0, offset)
+            return [_chat(chat) for chat in im.chats(offset + max(1, min(limit, 100)))[offset:]]
         except Exception as error:
             raise _refusal(error) from error
 
     @server.tool(annotations=READS)
-    def read_messages(chat: str, limit: int = 20) -> list[dict[str, Any]]:
+    def read_messages(
+        chat: str, limit: int = 20, before: str | None = None, after: str | None = None
+    ) -> list[dict[str, Any]]:
         """A chat's latest messages, oldest first. `chat` is a chat id from list_chats, a phone number or email of an
-        existing conversation, or a group's name."""
+        existing conversation, or a group's name. To read further back, pass `before`: the guid of the oldest message
+        you have (an empty list means the start of the chat). `after` reads on from a message instead."""
         try:
-            return [_message(message) for message in im.history(chat, max(1, min(limit, 200)))]
+            limit = max(1, min(limit, 200))
+            return [_message(message) for message in im.history(chat, limit, before=before, after=after)]
+        except Exception as error:
+            raise _refusal(error) from error
+
+    @server.tool(annotations=READS)
+    def search_messages(
+        query: str, chat: str | None = None, limit: int = 20, before: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Messages containing `query` (ignoring case), newest first: in one chat, or in all of them. For more
+        results, pass `before`: the guid of the last (oldest) one you got. To see what was said around a result, call
+        read_messages with its chat and `before` or `after` set to its guid."""
+        try:
+            limit = max(1, min(limit, 100))
+            return [_message(message) for message in im.search(query, chat=chat, limit=limit, before=before)]
         except Exception as error:
             raise _refusal(error) from error
 
