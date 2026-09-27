@@ -43,6 +43,8 @@ def describe(message: Message) -> str:
         if event.kind == "renamed" and not event.name:
             template = "removed the group's name"
         body = template.format(person=event.person or "me", name=f'"{event.name}"', code="/".join(map(str, event.code)))
+    elif message.is_voice:
+        body = f"🎤 {message.transcript}" if message.transcript else "🎤 a voice message (not transcribed yet)"
     elif (link := message.link) and link.title:
         body = f"{message.text or link.url}  🔗 {link.title}" + (f" ({link.site_name})" if link.site_name else "")
     elif place := message.location:
@@ -61,6 +63,8 @@ def describe(message: Message) -> str:
             body += f" [{count} attachment{'s' if count > 1 else ''}]"
         if message.reply_to:
             body = f"(reply to {message.reply_to}) {body}"
+    if message.status == "failed":
+        body += "  ⚠ not delivered"
     return f"[{when}] {who} in {where}: {body}  <{message.guid}>"
 
 
@@ -75,8 +79,8 @@ def _print_poll(results: PollResults, as_json: bool) -> None:
 
 
 SENDING = (
-    "send", "send-file", "send-link", "send-sticker", "react-sticker", "send-location", "send-later", "cancel",
-    "send-poll", "vote", "reply", "react",
+    "send", "send-file", "send-link", "send-voice", "send-sticker", "react-sticker", "send-location", "send-later",
+    "cancel", "send-poll", "vote", "reply", "react", "typing",
 )
 
 
@@ -230,6 +234,13 @@ async def _send(args: argparse.Namespace) -> int:
             guid = await im.send_location(args.chat, args.latitude, args.longitude, name=args.name)
         elif args.command == "send-link":
             guid = await im.send_link(args.chat, args.url)
+        elif args.command == "send-voice":
+            if (args.path is None) == (args.text is None):
+                raise ValueError("give an audio file or --text, not both")
+            guid = await im.send_voice(args.chat, args.path, text=args.text, voice=args.voice)
+        elif args.command == "typing":
+            await im.typing(args.chat, not args.off)
+            return 0
         elif args.command == "react-sticker":
             guid = await im.react_with_sticker(args.message, args.path)
         elif args.command == "send-later":
@@ -318,6 +329,16 @@ def _parser() -> argparse.ArgumentParser:
     link = commands.add_parser("send-link", parents=[mine], help="send a link with its preview")
     link.add_argument("chat", help="phone number, email, group name, or chat GUID")
     link.add_argument("url", help="an http:// or https:// link to a page on the public internet")
+
+    voice = commands.add_parser("send-voice", parents=[mine], help="send a voice message: audio, or text spoken aloud")
+    voice.add_argument("chat", help="phone number, email, group name, or chat GUID")
+    voice.add_argument("path", nargs="?", help="an audio file (m4a, mp3, wav, aiff, caf)")
+    voice.add_argument("--text", help="text for the Mac's text-to-speech to say instead")
+    voice.add_argument("--voice", help="which voice says it (see `say -v '?'`)")
+
+    typing = commands.add_parser("typing", parents=[mine], help="show (or with --off, hide) your typing indicator")
+    typing.add_argument("chat", help="phone number, email, group name, or chat GUID")
+    typing.add_argument("--off", action="store_true", help="stop showing it")
 
     sticker = commands.add_parser("send-sticker", parents=[mine], help="send an image as a sticker")
     sticker.add_argument("chat", help="phone number, email, group name, or chat GUID")

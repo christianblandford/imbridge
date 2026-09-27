@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Voice messages: `Message.is_voice` and `Message.transcript` (Messages' own transcription, read from the message's
+  attributes; `await im.transcript(message)` waits for it). `send_voice(chat, path)` sends audio and
+  `send_voice(chat, text=..., voice=None)` sends text spoken by the Mac's text-to-speech, both converted with
+  `afconvert` to what Messages records (mono Opus at 24 kHz in a .caf) and sent as a voice message. `imbridge
+  send-voice` and the MCP tool `send_voice_message` do the same. Verified live: the voice message arrived, was
+  delivered, and Messages transcribed it.
+- Delivery: `Message.status` (`sending`, `sent`, `delivered`, `read`, `failed`) with `delivered_at`, `read_at` and
+  `played_at`, and `await im.wait_for_delivery(guid, timeout=30)`; groups and SMS stop at `sent`, as Messages never
+  learns more there. The MCP output marks messages that weren't delivered, and the tool `message_status` checks one.
+  `imbridge history` flags messages that weren't delivered.
+- `imbridge typing CHAT [--off]` shows or hides your typing indicator.
+
 ## 0.6.0 (2026-09-27)
 
 - Incoming typing: `im.is_typing(chat)`, `await im.wait_while_typing(chat, timeout=30)` (so a bot doesn't answer

@@ -63,6 +63,8 @@ STICKER_TYPES = (".png", ".heic", ".heics", ".gif", ".jpg", ".jpeg", ".webp")
 MAX_POLL_BYTES = 4096  # a poll's options, as Messages encodes them, must fit in this
 LINK_TIMEOUT = 15.0  # seconds Messages gets to load a link's preview before it goes as a plain link
 TYPING_TIMEOUT = 60.0  # seconds a typing bubble lasts with no news: Messages lets one go about then
+VOICE_FILE = "Audio Message.caf"  # what Messages names the voice messages it records
+MAX_SPOKEN = 5000  # characters of text send_voice speaks (several minutes of audio)
 # The macOS each feature needs on this Mac; the people you message need the matching iOS or macOS to see it. Messages
 # on an older macOS doesn't even keep a poll someone sends: only its "Sent a poll" text.
 FEATURES = {
@@ -174,6 +176,58 @@ def _chat_matches(info: ChatInfo, query: str) -> bool:
     digits = re.sub(r"\D", "", query)  # a number as someone might type it: "(555) 123-45"
     return (len(digits) >= 4 and re.fullmatch(r"[\d\s().+-]+", query) is not None
             and any(digits in re.sub(r"\D", "", handle) for handle in info.participants if "@" not in handle))
+
+
+async def _run(*command: str) -> tuple[int, str]:
+    """Run a command; its exit status, and what it said (stderr, else stdout)."""
+    process = await asyncio.create_subprocess_exec(
+        *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    out, err = await process.communicate()
+    return process.returncode or 0, (err or out).decode(errors="replace").strip()
+
+
+async def _voices() -> list[str]:
+    """The voices `say` has, by name ("Samantha", "Eddy (English (US))")."""
+    _, listing = await _run("say", "-v", "?")
+    named = (re.match(r"(.+?)\s+[a-z]{2,3}[_-][A-Za-z0-9]{2,4}\s+#", line) for line in listing.splitlines())
+    return [match[1] for match in named if match]
+
+
+async def _speak(text: str, voice: str | None, folder: Path) -> Path:
+    """text spoken by the Mac's text-to-speech, as an AIFF in folder."""
+    text = text.strip()
+    if not text:
+        raise ValueError("there's no text to speak")
+    if len(text) > MAX_SPOKEN:
+        raise ValueError(f"send_voice speaks up to {MAX_SPOKEN} characters")
+    script, spoken = folder / "speech.txt", folder / "speech.aiff"
+    script.write_text(text)
+    command = ["say", "-o", str(spoken), "-f", str(script)]
+    if voice:
+        names = await _voices()
+        match = next((name for name in names if name.casefold() == voice.strip().casefold()), None)
+        if match is None:  # say itself would quietly use the default voice
+            raise ValueError(f"the Mac has no voice named {voice!r}; `say -v '?'` lists its {len(names)} voices")
+        command += ["-v", match]
+    status, said = await _run(*command)
+    if status or not spoken.exists():
+        raise RuntimeError(f"text-to-speech failed: {said or status}")
+    return spoken
+
+
+async def _voice_audio(source: Path, folder: Path) -> Path:
+    """source as a voice message's audio, in folder: mono Opus at 24 kHz in a .caf, as Messages records them. Two
+    steps, since afconvert can't take audio laid out as stereo straight to mono Opus."""
+    mono, audio = folder / "mono.wav", folder / VOICE_FILE
+    for command in (
+        ("afconvert", "-f", "WAVE", "-d", "LEI16", "-c", "1", "--mix", str(source), str(mono)),
+        ("afconvert", "-f", "caff", "-d", "opus@24000", "-c", "1", "-b", "32000", str(mono), str(audio)),
+    ):
+        status, said = await _run(*command)
+        if status or not Path(command[-1]).exists():
+            raise ValueError(f"{source.name} isn't audio this Mac can convert ({said or status})")
+    return audio
 
 
 def helper_build(dylib: Path) -> str | None:
@@ -371,6 +425,13 @@ class Chat:
     async def send_link(self, url: str, *, guid: str | None = None) -> str:
         """Send a link with its preview to this chat: see IMBridge.send_link."""
         return await self._bridge.send_link(self.guid, url, guid=guid)
+
+    async def send_voice(
+        self, path: str | Path | None = None, *, text: str | None = None, voice: str | None = None,
+        guid: str | None = None,
+    ) -> str:
+        """Send a voice message to this chat, from an audio file or spoken text: see IMBridge.send_voice."""
+        return await self._bridge.send_voice(self.guid, path, text=text, voice=voice, guid=guid)
 
     async def react_with_sticker(self, message: Message | str, path: str | Path) -> str:
         """Tapback one of this chat's messages with a sticker: see IMBridge.react_with_sticker."""
@@ -909,6 +970,70 @@ class IMBridge:
             shutil.rmtree(folder, ignore_errors=True)
             raise
         return folder, {"payload": result["payload"], "attachments": pictures}
+
+    async def send_voice(
+        self,
+        chat: str,
+        path: str | Path | None = None,
+        *,
+        text: str | None = None,
+        voice: str | None = None,
+        guid: str | None = None,
+    ) -> str:
+        """Send a voice message: an audio file (m4a, mp3, wav, aiff, caf: what macOS can play), or text spoken by the
+        Mac's text-to-speech, in one of the voices `say -v '?'` lists. It goes the way Messages sends one it recorded,
+        as Opus audio in a .caf, so it shows a waveform and a play button and their Messages transcribes it. Returns
+        its GUID; guid is one you choose, as in send()."""
+        if (path is None) == (text is None):
+            raise ValueError("send_voice takes an audio file or text to speak, not both")
+        guid = _chosen(guid)
+        chat_guid = self.resolve_chat(chat)
+        self._check_send(chat_guid)
+        with tempfile.TemporaryDirectory() as folder:
+            work = Path(folder)
+            if text is not None:
+                source = await _speak(text, voice, work)
+            else:
+                source = Path(path).expanduser()
+                if not source.is_file():
+                    raise FileNotFoundError(f"there's no audio file at {source}")
+            audio = await _voice_audio(source, work)
+            self._guard.record_send(chat_guid)
+            request = {"chatGuid": chat_guid, "isAudioMessage": 1, "attributedBody": None, "subject": None,
+                       "effectId": None, "selectedMessageGuid": None, "partIndex": 0, "guid": guid}
+            sent = await self._send_staged("send-attachment", audio, request)
+        self._remember(sent, chat_guid)
+        return sent
+
+    async def transcript(self, message: Message | str, timeout: float = 30.0) -> str | None:
+        """A voice message's words, waiting up to timeout seconds for Messages to transcribe it (it does, a moment
+        after the message arrives). None if it isn't a voice message, or no transcript came."""
+        guid = message.guid if isinstance(message, Message) else message
+        deadline = time.monotonic() + timeout
+        while True:
+            found = await asyncio.to_thread(self.db.message, guid)
+            if found is not None and (found.transcript or not found.is_voice):
+                return found.transcript
+            if time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(0.5)
+
+    async def wait_for_delivery(self, message: Message | str, timeout: float = 30.0) -> str | None:
+        """Wait up to timeout seconds for one of your messages to be delivered, read or refused, and return its
+        status: "delivered", "read" or "failed", or where it still is ("sending", "sent"). In a group or over SMS,
+        Messages never learns that a message arrived, so "sent" is final there, and returned at once. None if there's
+        no such message."""
+        guid = message.guid if isinstance(message, Message) else message
+        deadline = time.monotonic() + timeout
+        while True:
+            found = await asyncio.to_thread(self.db.message, guid)
+            final = found is not None and (
+                found.status in ("delivered", "read", "failed")
+                or (found.status == "sent" and (found.is_group or found.service == "SMS"))
+            )
+            if final or time.monotonic() >= deadline:
+                return found.status if found else None
+            await asyncio.sleep(0.5)
 
     async def react_with_sticker(self, message: Message | str, path: str | Path, *, chat: str | None = None) -> str:
         """Tapback a message with a sticker (an image, like the stickers in Messages' tapback menu). Like any tapback,

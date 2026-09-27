@@ -86,6 +86,11 @@ def _message(message: Message) -> dict[str, Any]:
         item["vote"] = {"in_poll": vote.poll_guid, "took_back": not vote.options}
     if link := message.link:
         item["link"] = {"url": link.url, "title": link.title, "summary": link.summary, "site": link.site_name}
+    if message.is_voice:
+        item["voice"] = True
+        item["transcript"] = message.transcript  # null until Messages has transcribed it
+    if message.status and message.status != "delivered":  # delivered is the usual; say when it's anything else
+        item["status"] = message.status
     if place := message.location:
         item["location"] = {"latitude": place.latitude, "longitude": place.longitude, "name": place.name,
                             "address": place.address}
@@ -317,6 +322,29 @@ def build_server(im: IMBridge) -> MCPServer:
             return {"guid": await im.send_link(chat, url)}
         except Exception as error:
             raise _refusal(error) from error
+
+    @server.tool(annotations=SENDS)
+    async def send_voice_message(chat: str, text: str, voice: str | None = None) -> dict[str, Any]:
+        """Send text as a voice message, spoken by the Mac's text-to-speech: it arrives like one the user recorded,
+        with a play button. `voice` is one of the Mac's voices (like "Samantha" or "Daniel"); leave it out for the
+        default. Returns its guid."""
+        try:
+            return {"guid": await im.send_voice(chat, text=text, voice=voice)}
+        except Exception as error:
+            raise _refusal(error) from error
+
+    @server.tool(annotations=READS)
+    async def message_status(message_guid: str, wait_seconds: int = 0) -> dict[str, Any]:
+        """Where a message you sent has got to: "sending", "sent", "delivered", "read" (if they send read receipts)
+        or "failed" (not delivered: tell the user). With wait_seconds (up to 55), waits for it to be delivered or
+        fail. In groups and over SMS, Messages never learns about delivery, so "sent" is as far as those get."""
+        try:
+            status = await im.wait_for_delivery(message_guid, timeout=max(0, min(wait_seconds, MAX_WAIT)))
+        except Exception as error:
+            raise _refusal(error) from error
+        if status is None:
+            raise ToolError(f"there's no message {message_guid}")
+        return {"guid": message_guid, "status": status}
 
     @tool("send_later", annotations=SENDS)
     async def send_later(chat: str, text: str, at: str) -> dict[str, Any]:

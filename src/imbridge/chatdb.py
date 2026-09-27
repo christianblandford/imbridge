@@ -22,7 +22,7 @@ from .links import URL_BALLOON, LinkPreview, parse_link
 from .locations import Location, is_pin, read_pin
 from .polls import POLL_TYPES, POLLS_BUNDLE, Poll, PollOption, PollResults, PollVote, fallback_text, parse_poll
 from .reactions import Reaction, parse_reaction
-from .typedstream import attributed_body_mentions, attributed_body_text
+from .typedstream import attributed_body_mentions, attributed_body_text, attributed_body_transcript
 
 APPLE_EPOCH = 978_307_200  # 2001-01-01T00:00:00Z as a Unix timestamp
 GROUP_STYLE = 43  # chat.style for group chats (45 is one-to-one)
@@ -87,13 +87,21 @@ class Message:
     scheduled_for: datetime | None = None  # for your own message waiting in Send Later: when it goes out
     location: Location | None = None  # set when the message is a location pin (and its file is still on disk)
     link: LinkPreview | None = None  # set when the message is a link with a preview: its title, summary and site
+    is_voice: bool = False  # a voice message recorded in Messages; its audio is the attachment
+    transcript: str | None = None  # a voice message's words, once Messages has transcribed it
+    status: str | None = None  # your own messages: "sending", "sent", "delivered", "read" or "failed"
+    delivered_at: datetime | None = None  # your own messages: when it reached them (None if Messages didn't say)
+    read_at: datetime | None = None  # when it was read: by them (your messages, if they send read receipts), or by you
+    played_at: datetime | None = None  # a voice message: when it was played
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["date"] = self.date.isoformat() if self.date else None
         data["edited_at"] = self.edited_at.isoformat() if self.edited_at else None
         data["unsent_at"] = self.unsent_at.isoformat() if self.unsent_at else None
-        data["scheduled_for"] = self.scheduled_for.isoformat() if self.scheduled_for else None
+        for key in ("scheduled_for", "delivered_at", "read_at", "played_at"):
+            value = getattr(self, key)
+            data[key] = value.isoformat() if value else None
         return data
 
 
@@ -493,6 +501,12 @@ class ChatDB:
                     poll=poll if isinstance(poll, Poll) else None,
                     vote=poll if isinstance(poll, PollVote) else None,
                     scheduled_for=apple_time(row["date"]) if _waiting(row) else None,
+                    is_voice=bool(row["is_audio_message"]),
+                    transcript=attributed_body_transcript(row["attributedBody"]) if row["is_audio_message"] else None,
+                    status=_status(row),
+                    delivered_at=apple_time(row["date_delivered"]) if row["is_from_me"] else None,
+                    read_at=apple_time(row["date_read"]),
+                    played_at=apple_time(row["date_played"]),
                 )
             )
         return messages
@@ -553,7 +567,8 @@ def _message_select(columns: set[str], chat_columns: set[str], join_columns: set
         f" {column('associated_message_emoji')}, {column('thread_originator_guid')}, {column('destination_caller_id')},"
         f" {column('date_edited')}, {column('date_retracted')}, {column('message_summary_info')},"
         f" {column('item_type')}, {column('group_action_type')}, {column('group_title')}, {polls}"
-        f" {column('schedule_type')}, {column('is_delivered')},"
+        f" {column('schedule_type')}, {column('is_delivered')}, {column('is_sent')}, {column('error')},"
+        f" {column('date_delivered')}, {column('date_read')}, {column('date_played')}, {column('is_audio_message')},"
         f" {'oh.id' if others else 'NULL'} AS other_handle_id,"
         f" {'c.last_addressed_handle' if 'last_addressed_handle' in chat_columns else 'NULL'} AS chat_address,"
         " h.id AS sender, c.guid AS chat_guid, c.display_name AS chat_name, c.style AS chat_style"
@@ -568,6 +583,20 @@ def _message_select(columns: set[str], chat_columns: set[str], join_columns: set
 def _location(attachments: tuple[Attachment, ...]) -> Location | None:
     """The place in a location pin among a message's attachments."""
     return next((read_pin(a.path) for a in attachments if is_pin(a.mime_type, a.name)), None)
+
+
+def _status(row: sqlite3.Row) -> str | None:
+    """Where your own message has got to; None for anyone else's. A group or SMS message may stop at "sent": Messages
+    doesn't always learn that one arrived."""
+    if not row["is_from_me"] or row["item_type"] or _waiting(row):
+        return None
+    if row["error"]:
+        return "failed"  # what Messages shows as Not Delivered
+    if row["date_read"]:
+        return "read"
+    if row["is_delivered"]:
+        return "delivered"
+    return "sent" if row["is_sent"] else "sending"
 
 
 def _waiting(row: sqlite3.Row) -> bool:

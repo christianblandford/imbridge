@@ -1,4 +1,4 @@
-"""Plain text and @mentions out of a message's attributedBody.
+"""Plain text, @mentions and voice transcripts out of a message's attributedBody.
 
 Since macOS 13, Messages often leaves message.text empty and keeps the text only in attributedBody: an
 NSAttributedString archived in NeXT's typedstream format. The string sits right after the NSString class name as
@@ -7,6 +7,8 @@ NSAttributedString archived in NeXT's typedstream format. The string sits right 
 
 Each @mention is an attribute on the mentioned name: the key __kIMMentionConfirmedMention, then the person's phone
 number or email as another string object (0x84, references to the NSString class and the '+' type, then the string).
+A voice message's transcript, once Messages has made one, is an attribute on the audio's placeholder character,
+stored the same way under the key IMAudioTranscription.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from __future__ import annotations
 import re
 
 _MENTION = b"__kIMMentionConfirmedMention"
+_TRANSCRIPT = b"IMAudioTranscription"
 _MENTION_VALUE = re.compile(rb"\x86\x92\x84[\x92-\xff]{2}")  # the key's end, then a new string object's references
 
 
@@ -43,6 +46,14 @@ def attributed_body_mentions(blob: bytes | None) -> tuple[str, ...]:
         if address and address not in found:
             found.append(address)
     return tuple(found)
+
+
+def attributed_body_transcript(blob: bytes | None) -> str | None:
+    """A voice message's transcript, or None if Messages hasn't transcribed it (or it isn't one)."""
+    at = blob.find(_TRANSCRIPT) if blob else -1
+    value = _MENTION_VALUE.match(blob, at + len(_TRANSCRIPT)) if at >= 0 else None
+    text = _string_at(blob, value.end()) if value else None
+    return text.strip() or None if text else None
 
 
 def _string_at(blob: bytes, i: int) -> str | None:

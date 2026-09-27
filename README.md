@@ -211,6 +211,8 @@ async with IMBridge(allow=["+15551234567"]) as im:
     await chat.send_sticker("party.png", on=guid)         # a sticker, stuck onto a message (or on its own)
     await chat.react_with_sticker(guid, "party.png")      # a sticker as a tapback
     await chat.send_location(37.3349, -122.0090, name="Apple Park")   # a location pin
+    await chat.send_voice("memo.m4a")                     # a voice message, from audio...
+    await chat.send_voice(text="On my way!")              # ...or spoken by the Mac's text-to-speech
     later = await chat.send_later("Happy birthday! 🎂", datetime(2026, 10, 3, 9, 0))  # Messages' Send Later
     chat.scheduled()                                      # what's waiting; chat.cancel_scheduled(later) takes it back
     poll = await chat.send_poll(["Pizza", "Sushi"], question="Lunch?")
@@ -236,6 +238,8 @@ async with IMBridge(allow=["+15551234567"]) as im:
     im.chats(20)                                          # recent chats, newest first; each has .can_send
     im.chats(query="alex")                                # by name, or someone in it: number, email or contact name
     im.message(guid)                                      # one message, or None
+    await im.wait_for_delivery(guid)                      # "delivered", "read", "failed", or where it still is
+    await im.transcript(voice_message)                    # a voice message's words, once Messages transcribes it
     im.search("dinner", limit=20, before=last)            # every chat: newest first, then page on
     im.poll(guid)                                         # a poll's options, votes and question (from any of its messages)
     await im.focus_status("+15551234567")                 # True if their Focus silences notifications; None if not shared
@@ -317,11 +321,26 @@ Every `Message` has these fields:
 | `scheduled_for` | for your own message waiting in Send Later: when it goes out |
 | `link` | set when the message is a link with a preview: `url`, `title`, `summary`, `site_name` and `original_url` |
 | `location` | set when the message is a location pin: `latitude`, `longitude`, `name`, `address` and the Maps `url` |
+| `is_voice`, `transcript` | a voice message, and its words once Messages has transcribed it |
+| `status` | your own messages: `sending`, `sent`, `delivered`, `read` or `failed` (not delivered) |
+| `delivered_at`, `read_at`, `played_at` | when your message reached them; when it was read (by them, if they send read receipts, or by you); when a voice message was played |
 | `mentions` | the phone numbers and emails it @mentions; `im.mentions_me(message)` checks for this program's address |
 | `poll` | set when the message is a poll (or an update adding a choice to one): `options` (each with `id` and `text`), `creator`, `session`, `update_of` |
 | `vote` | set when the message is a vote in a poll: `poll_guid` and `options`, the voter's whole current choice (empty when they took it back) |
 | `event` | set when the row is a change to a group rather than a message (streams and history include these with `include_events=True`): `kind` (`added`, `removed`, `left`, `renamed`, `photo_changed`, `photo_removed`, `other`), `person` (who was added, removed or left; `None` is you), `name` (for `renamed`) and `code`. `sender` is who made the change. |
 | `address` | which of your addresses it was sent to (or, for your own messages, sent from) |
+
+**Voice messages.** A voice message arrives with `is_voice` set and the audio as its attachment, and `transcript`
+holds its words once Messages has transcribed it (usually at once; `await im.transcript(message)` waits for it).
+`send_voice(chat, path)` sends audio (m4a, mp3, wav, aiff, caf), and `send_voice(chat, text="...", voice=None)`
+sends text spoken by the Mac's text-to-speech. Either way it goes as Messages sends one it recorded: Opus audio in a
+`.caf`, converted by macOS's own `afconvert`, so it shows a play button and a waveform and is transcribed on their
+end.
+
+**Delivery.** Your own messages carry a `status`: `sending`, `sent`, `delivered`, `read` (when they send read
+receipts) or `failed` (Messages' "Not Delivered"), with `delivered_at` and `read_at`. `await
+im.wait_for_delivery(guid, timeout=30)` waits for delivery or failure. In groups and over SMS, Messages never
+learns that a message arrived, so `sent` is final there, and returned at once.
 
 **Typing.** `is_typing(chat)`, `wait_while_typing(chat, timeout=30)` and `async for change in
 im.typing_changes()` follow the other person's typing bubble, as the helper inside Messages reports it; so do
@@ -386,6 +405,8 @@ imbridge allowed
 imbridge send +15551234567 "hello" [--reply-to GUID] [--effect confetti] [--text-effect big]
 imbridge send-file +15551234567 photo.jpg [--reply-to GUID]
 imbridge send-link +15551234567 https://example.com/article   # with its preview
+imbridge send-voice +15551234567 memo.m4a | --text "On my way!" [--voice Samantha]
+imbridge typing +15551234567 [--off]                 # your typing indicator
 imbridge send-sticker +15551234567 party.png [--on GUID] [--label "a party hat"]
 imbridge react-sticker GUID party.png                # a sticker as a tapback
 imbridge send-location +15551234567 37.3349 -122.0090 [--name "Apple Park"]
@@ -406,7 +427,8 @@ imbridge mcp [--address ADDRESS]                     # the MCP server, over stdi
 imbridge <command> --address +15550002222           # start, the sends, history, watch and mcp take it
 ```
 
-`send`, `send-file`, `send-link`, `send-poll`, `vote`, `reply` and `react` print the new message's GUID. They follow the same allowlist and rate limits as the
+`send`, `send-file`, `send-link`, `send-voice`, `send-poll`, `vote`, `reply` and `react` print the new message's
+GUID. They follow the same allowlist and rate limits as the
 library.
 
 ## Using it with an AI agent
@@ -441,6 +463,8 @@ itself.
 | `send_poll`, `vote` | send a poll (and its question), or vote in one |
 | `send_location` | send a location pin |
 | `send_link` | send a link with its preview |
+| `send_voice_message` | send text as a voice message, spoken by the Mac |
+| `message_status` | whether a message you sent was delivered, read, or failed |
 | `send_later`, `list_scheduled`, `cancel_scheduled` | Send Later: schedule a message, see what's waiting, cancel it |
 | `edit_message`, `unsend_message` | change or take back a message it sent, within iMessage's limits |
 | `show_typing` | the typing indicator |
