@@ -31,13 +31,16 @@ for patch in "$HERE"/patches/*.patch; do
 done
 
 SRC=$WORK/Messages/MacOS-11+
+# The build's name: a hash of the upstream pin and the patches. The helper reports it when it connects, and it can be
+# read off the dylib ("IMBRIDGE_BUILD=..."), so imbridge knows when Messages still has an older helper loaded.
+BUILD=$(cat "$HERE/UPSTREAM" "$HERE"/patches/*.patch | shasum -a 256 | cut -c1-16)
 SDK=$(xcrun --sdk macosx --show-sdk-path)
 mkdir -p "${OUT:h}"
 
 # Messages is an arm64e process, so that is the only slice that matters (loading it needs -arm64e_preview_abi).
 # Link exactly what the stock BlueBubbles build links. ChatKit is deliberately absent: on macOS 26+ it lives under
 # /System/iOSSupport, and the helper only reaches its classes at runtime through NSClassFromString.
-clang -arch arm64e -mmacosx-version-min=11.5 -dynamiclib -fobjc-arc -fmodules -O2 -w \
+clang -arch arm64e -mmacosx-version-min=11.5 -dynamiclib -fobjc-arc -fmodules -O2 -w -DIMBRIDGE_BUILD="\"$BUILD\"" \
   -isysroot "$SDK" -F"$SDK/System/Library/PrivateFrameworks" \
   -I"$SRC/BlueBubblesHelper" -I"$SRC/BlueBubblesHelper/ZKSwizzle" -I"$SRC/Pods/CocoaAsyncSocket/Source/GCD" \
   "$SRC"/BlueBubblesHelper/*.m "$SRC/BlueBubblesHelper/ZKSwizzle/ZKSwizzle.m" \
@@ -47,4 +50,4 @@ clang -arch arm64e -mmacosx-version-min=11.5 -dynamiclib -fobjc-arc -fmodules -O
   -framework IMCore -framework IMSharedUtilities -framework IMDPersistence -framework IDS -framework FMF \
   -install_name "@rpath/${OUT:t}" -o "$OUT"
 codesign --force --sign - "$OUT"
-echo "built $OUT"
+echo "built $OUT (build $BUILD)"

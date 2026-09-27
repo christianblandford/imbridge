@@ -54,6 +54,7 @@ class HelperServer:
         self.token = token
         self.on_event = on_event
         self.process: str | None = None  # bundle id the connected helper reported in its ping
+        self.build: str | None = None  # which helper build it said it is (None: one from before builds were named)
         self._server: asyncio.Server | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._ready = asyncio.Event()
@@ -155,6 +156,7 @@ class HelperServer:
         self._writer = None
         self._ready.clear()
         self.process = None
+        self.build = None
         for future in self._pending.values():
             if not future.done():
                 future.set_exception(HelperNotConnected("the helper disconnected"))
@@ -174,6 +176,7 @@ class HelperServer:
             return
         if message.get("event") == "ping":
             self.process = message.get("process")
+            self.build = message.get("build")
             self._ready.set()
         if self.on_event is not None:
             self.on_event(message)

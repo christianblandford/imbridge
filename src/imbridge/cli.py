@@ -270,7 +270,8 @@ def _parser() -> argparse.ArgumentParser:
 
     commands.add_parser("doctor", help="check that this Mac is set up for imbridge")
     commands.add_parser(
-        "start", parents=[mine], help="load the helper into Messages (restarting it, hidden) and wait until it answers"
+        "start", parents=[mine],
+        help="load the helper into Messages (restarting it, hidden, unless it's loaded) and wait until it answers",
     )
 
     allow = commands.add_parser("allow", help="let imbridge send to a chat (asks you to confirm)")

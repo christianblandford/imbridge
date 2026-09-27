@@ -76,10 +76,11 @@ def free_port() -> int:
 class FakeMessages:
     """Stands in for the helper inside Messages: dials imbridge like the real one, records requests, answers them."""
 
-    def __init__(self, port: int, replies: dict | None = None) -> None:
+    def __init__(self, port: int, replies: dict | None = None, build: str | None = None) -> None:
         self.port = port
         self.replies = replies or {}
         self.requests: list[dict] = []
+        self.build = build  # the helper build it says it is, if any
 
     async def run(self) -> None:
         import asyncio
@@ -92,7 +93,8 @@ class FakeMessages:
                 break
             except OSError:
                 await asyncio.sleep(0.02)
-        writer.write(b'{"event": "ping", "process": "com.apple.MobileSMS"}\r\n')
+        ping = {"event": "ping", "process": "com.apple.MobileSMS", **({"build": self.build} if self.build else {})}
+        writer.write(json.dumps(ping).encode() + b"\r\n")
         await writer.drain()
         while line := await reader.readline():
             request = json.loads(line)

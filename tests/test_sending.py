@@ -21,6 +21,7 @@ from imbridge import (
     WrongChat,
     config,
 )
+from imbridge.client import helper_build
 
 
 def run(chat_db, scenario, replies=None, log=None, **kwargs):
@@ -197,6 +198,36 @@ def test_another_program_holding_the_helper_is_reported_before_anything_is_sent(
             await other.wait_closed()
 
     asyncio.run(scenario())
+
+
+def test_an_older_helper_is_reloaded(chat_db, tmp_path, monkeypatch, caplog):
+    dylib = tmp_path / "imbridge-helper.dylib"
+    dylib.write_bytes(b"\xcf\xfa\xed\xfe...IMBRIDGE_BUILD=0123456789abcdef\x00...")
+    assert helper_build(dylib) == "0123456789abcdef" and helper_build(tmp_path / "missing.dylib") is None
+    launched = []
+    monkeypatch.setattr("imbridge.messages_app.launch_with_helper", lambda path, env: launched.append(path))
+
+    def connect(loaded, inject):
+        async def scenario():
+            port = free_port()
+            task = asyncio.create_task(FakeMessages(port, build=loaded).run())
+            im = IMBridge(chat_db=chat_db, token="t", port=port, dylib=dylib, inject=inject, poll_interval=0.01)
+            try:
+                await im.start()
+                await im.start()  # checked once, not on every request
+            finally:
+                await im.close()
+                task.cancel()
+
+        asyncio.run(scenario())
+
+    connect("0123456789abcdef", inject=True)  # this build: left alone
+    assert launched == []
+    connect("fedcba9876543210", inject=True)  # another build (or, with None, one from before builds were named)
+    connect(None, inject=True)
+    assert launched == [dylib, dylib]
+    connect(None, inject=False)  # not ours to restart, so say so
+    assert launched == [dylib, dylib] and "run `imbridge start`" in caplog.text
 
 
 def test_sending_a_sticker(chat_db, tmp_path):

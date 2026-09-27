@@ -1,0 +1,30 @@
+imbridge helper build: the helper's ping reports which build it is ("build", which helper/build.sh sets from a hash of
+the upstream pin and the patches), and the dylib carries it as a marker string, IMBRIDGE_BUILD=<build>. imbridge
+compares the two to notice an older helper still loaded in Messages after an upgrade, and reloads it.
+
+diff --git a/Messages/MacOS-11+/BlueBubblesHelper/NetworkController.m b/Messages/MacOS-11+/BlueBubblesHelper/NetworkController.m
+index 4370dc8..95d2f65 100644
+--- a/Messages/MacOS-11+/BlueBubblesHelper/NetworkController.m
++++ b/Messages/MacOS-11+/BlueBubblesHelper/NetworkController.m
+@@ -100,6 +100,13 @@ - (NSDictionary*) jsonDecode:(NSString*) json {
+ }
+ 
+ 
++// imbridge: which build of the helper this is (helper/build.sh sets it from the patch series). The ping reports it, and
++// the marker lets imbridge read it off the dylib, so it can tell when Messages still runs an older helper.
++#ifndef IMBRIDGE_BUILD
++#define IMBRIDGE_BUILD "unknown"
++#endif
++__attribute__((used)) static const char IMBBuildMarker[] = "IMBRIDGE_BUILD=" IMBRIDGE_BUILD;
++
+ #pragma mark - Socket state change handlers
+ 
+ - (void)socket:(GCDAsyncSocket*)sock didConnectToHost:(NSString*)host port:(UInt16)port {
+@@ -109,6 +116,7 @@ - (void)socket:(GCDAsyncSocket*)sock didConnectToHost:(NSString*)host port:(UInt
+         @"event": @"ping",
+         @"message": @"Helper Connected!",
+         @"process": [[NSBundle mainBundle] bundleIdentifier],
++        @"build": @IMBRIDGE_BUILD,
+     };
+     [self sendMessage:message];
+ }

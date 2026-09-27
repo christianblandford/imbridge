@@ -15,6 +15,11 @@
 - `send_poll()` takes a `guid` you choose, like `send()` (helper/patches/0013-poll-guids.patch). The question sent
   after the poll gets a GUID made from it, `question_guid(guid)`, so resending the pair with the same `guid` delivers
   neither twice. Verified live: a retry with the same `guid` left one poll and one question.
+- Upgrading reloads the helper: Messages kept running the helper it was started with, and an older one ignores
+  requests it doesn't know, so a new feature timed out until Messages restarted. The helper now reports its build
+  when it connects (helper/patches/0014-helper-build.patch; `helper/build.sh` names it from the patches), and
+  imbridge reloads Messages once when that isn't the build it ships (with `inject=False` it logs a warning instead).
+  `imbridge start` now restarts Messages only when it has to.
 - `Message.attachments` leaves out attachments Messages hides: the pictures behind a balloon, like a link preview's or
   an iMessage app's, which aren't anything the sender attached.
 

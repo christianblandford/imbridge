@@ -506,6 +506,7 @@ applies imbridge's changes in order:
 11. Message GUIDs the caller chooses
 12. Link previews: loading one with LinkPresentation, and sending it
 13. The caller's GUID for polls too
+14. The helper's build in its ping, so imbridge reloads an older helper still running in Messages
 
 `helper/build.sh` builds it with only the Xcode Command Line Tools. Released wheels include the built helper.
 

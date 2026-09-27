@@ -127,6 +127,15 @@ def _chosen(guid: str | None) -> str | None:
         raise ValueError(f"{guid!r} isn't a UUID; make one with str(uuid.uuid4())") from None
 
 
+def helper_build(dylib: Path) -> str | None:
+    """The build a helper dylib says it is (helper/build.sh marks it "IMBRIDGE_BUILD=<build>"), or None."""
+    try:
+        found = re.search(rb"IMBRIDGE_BUILD=([0-9a-f]{16})\x00", dylib.read_bytes())
+    except OSError:
+        return None
+    return found[1].decode() if found else None
+
+
 def question_guid(poll_guid: str) -> str:
     """The GUID send_poll gives the question it sends after a poll whose GUID you chose: a UUID made from the poll's."""
     return str(uuid.uuid5(uuid.UUID(poll_guid), "question")).upper()
@@ -358,7 +367,8 @@ class IMBridge:
         IMBRIDGE_ADDRESS. If unset and messages arrive at more than one of your phone numbers, imbridge raises
         AddressNotChosen rather than guess; ANY_ADDRESS deliberately takes them all.
     max_per_chat, max_total: messages and tapbacks per minute, per chat and in total, across all imbridge processes.
-    inject: load the helper into Messages (restarting Messages) when none answers.
+    inject: load the helper into Messages (restarting Messages) when none answers, or when the one that answers is
+        from another imbridge build (as after an upgrade, until Messages restarts).
     """
 
     def __init__(
@@ -390,6 +400,7 @@ class IMBridge:
         # The chat of each message we sent, so replies and tapbacks work before chat.db catches up.
         self._chat_of: dict[str, str] = {}
         self._helper_lock = asyncio.Lock()  # so concurrent sends don't each relaunch Messages
+        self._build_checked = False  # whether a connected helper's build has been compared with self.dylib's
         # What we sent recently, as (time, chat, fingerprint), to recognize the copies a chat with yourself echoes back.
         self._recent: deque[tuple[float, str, str]] = deque(maxlen=200)
         self._mine: set[str] = set()  # address keys of your own addresses
@@ -1322,17 +1333,33 @@ class IMBridge:
                         f"another program on this Mac is using the helper (port {self._server.port}); only one "
                         "imbridge program can send at a time. Nothing was sent."
                     ) from None
-            if self._server.connected:
-                return
-            try:
-                await self._server.wait_connected(timeout=3)  # an injected helper redials every second
-                return
-            except (TimeoutError, asyncio.TimeoutError):  # the same class from Python 3.11 on
-                if not self.inject:
-                    raise HelperNotConnected(
-                        "no helper answered; run `imbridge start` (or use inject=True) to load it into Messages"
-                    ) from None
-            await self._relaunch(timeout)
+            if not self._server.connected:
+                try:
+                    await self._server.wait_connected(timeout=3)  # an injected helper redials every second
+                except (TimeoutError, asyncio.TimeoutError):  # the same class from Python 3.11 on
+                    if not self.inject:
+                        raise HelperNotConnected(
+                            "no helper answered; run `imbridge start` (or use inject=True) to load it into Messages"
+                        ) from None
+                    await self._relaunch(timeout)
+                    return
+            if not self._build_checked:
+                await self._check_build(timeout)
+
+    async def _check_build(self, timeout: float) -> None:
+        """Reload the helper if Messages still has another build loaded: an older helper ignores what it doesn't
+        know, so a newer request would wait out its timeout instead of failing. Checked once."""
+        self._build_checked = True
+        wanted = await asyncio.to_thread(helper_build, self.dylib)
+        if wanted is None or self._server.build == wanted:
+            return
+        loaded = self._server.build or "an unnamed build"
+        if not self.inject:
+            log.warning("Messages has another imbridge helper loaded (%s, not %s): run `imbridge start` to load "
+                        "this one", loaded, wanted)
+            return
+        log.info("Messages has another imbridge helper loaded (%s); reloading it with %s", loaded, wanted)
+        await self._relaunch(timeout)
 
     async def _relaunch(self, timeout: float = 45.0) -> None:
         log.info("launching Messages with the helper")
