@@ -11,6 +11,8 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "APP_SUPPORT", tmp_path / "state")
     monkeypatch.setattr(config, "OUTGOING", tmp_path / "outgoing")
     monkeypatch.setattr(config, "ADDRESS_BOOK", tmp_path / "AddressBook")  # an empty Contacts unless a test adds one
+    # A macOS with every feature, wherever the tests run (CI runs them on Linux); test_features tries older ones.
+    monkeypatch.setattr("imbridge.client.macos_version", lambda: (27, 0))
 
 
 @pytest.fixture
