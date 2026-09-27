@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Typing, as tested on macOS 27: `typing()` shows your bubble, in group chats too, and `typing(False)` takes it away,
+  which Messages carries out about three seconds later. Seeing others type stays best effort, and the docs now say
+  why: on macOS 26 and later, Messages only takes in typing for the conversation on screen, and imbridge runs it
+  hidden. With a person typing, the Mac drew her bubble only with her conversation open, and the helper never saw it.
+
 ## 0.7.0 (2026-09-27)
 
 - Voice messages: `Message.is_voice` and `Message.transcript` (Messages' own transcription, read from the message's

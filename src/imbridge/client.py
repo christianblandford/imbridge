@@ -1266,7 +1266,8 @@ class IMBridge:
         return await self._react(chat_guid, guid, part, reaction, remove)
 
     async def typing(self, chat: str, on: bool = True) -> None:
-        """Show (or stop showing) the typing indicator in an allowed chat."""
+        """Show your typing bubble in an allowed chat (group chats too, on macOS 26 and later), or with on=False take
+        it away, which Messages does about three seconds later."""
         chat_guid = self.resolve_chat(chat)
         self._check_send(chat_guid)
         await self._request("start-typing" if on else "stop-typing", {"chatGuid": chat_guid})

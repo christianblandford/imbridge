@@ -394,7 +394,8 @@ def build_server(im: IMBridge) -> MCPServer:
 
     @server.tool(annotations=SENDS)
     async def show_typing(chat: str, typing: bool = True) -> dict[str, Any]:
-        """Show (or hide) the typing indicator in an allowed chat, e.g. while you work on a longer answer."""
+        """Show (or hide) your typing bubble in an allowed chat, group chats included, e.g. while you work on a longer
+        answer. Hiding it takes Messages a few seconds."""
         try:
             await im.typing(chat, typing)
             return {"typing": typing}

@@ -62,7 +62,13 @@ As of September 2026, from each project's code:
 | Send Later | Messages' own, checked | the server's own scheduler | ✗ | Messages' own |
 | Stickers | send, stick on, tapback | ✗ | send, stick on | send |
 | Bold, italics, text effects | ✓ | ✗ | bold, italics | ✓ |
-| Send link previews | ✓, public pages only | ✗ | ✓ | ✗ |
+| Link previews you send | ✓, public pages only | ✗ | ✓ | ✗ |
+| Voice messages | send (audio or text-to-speech), read transcripts | send | send, read transcripts | read transcripts |
+| Search messages | ✓ | ✓ | ✓ | ✓ |
+| Contact names | ✓ | ✓ | ✓ | ✓ |
+| Delivered and read status | ✓ | ✓ | ✓ | ✓ |
+| Typing indicators | show yours, in groups too; see others' before macOS 26² | show yours; see others' in one-to-one chats | show yours, in groups too; see others' | show yours, in groups too; see others', and who |
+| Live self-test | `imbridge doctor --live` | setup check only | setup check only | setup check only |
 | MCP server | ✓ | ✗ | ✗ | ✗ |
 | Sends only to chats you allowed | ✓ | ✗ | ✗ | ✗ |
 | Needs SIP disabled | yes | for Private API features | for its helper's features | yes |
@@ -70,6 +76,10 @@ As of September 2026, from each project's code:
 
 ¹ Each vote carries only the newly chosen option, so voting for a second option replaces the first. imbridge sends
 your whole current choice under the poll's own session, the way Messages does.
+
+² On macOS 26 and later, Messages only takes in someone's typing for the conversation it has on screen, and imbridge
+runs it hidden (tested on macOS 27, with a person typing). The others' code listens for typing too; it wasn't tested
+this way.
 
 If you only need plain text in and out and don't want to touch SIP, [imsg](https://github.com/openclaw/imsg) does
 that well. imbridge is for when your agent needs the whole conversation from Python, and for keeping it to the people
@@ -342,11 +352,12 @@ receipts) or `failed` (Messages' "Not Delivered"), with `delivered_at` and `read
 im.wait_for_delivery(guid, timeout=30)` waits for delivery or failure. In groups and over SMS, Messages never
 learns that a message arrived, so `sent` is final there, and returned at once.
 
-**Typing.** `is_typing(chat)`, `wait_while_typing(chat, timeout=30)` and `async for change in
-im.typing_changes()` follow the other person's typing bubble, as the helper inside Messages reports it; so do
-`imbridge watch --typing` and the MCP tool `typing_status`. Best effort: on macOS 15 and earlier the helper sees each
-bubble arrive. On macOS 26 and later it only sees the bubbles Messages draws in its conversation list, and in testing
-on macOS 27, with Messages running hidden, it saw none.
+**Typing.** `chat.typing()` shows your typing bubble and `chat.typing(False)` takes it away, which Messages does
+about three seconds later. On macOS 26 and later, Messages sends it in group chats too. Seeing someone else type
+(`is_typing(chat)`, `wait_while_typing(chat, timeout=30)`, `im.typing_changes()`, `imbridge watch --typing`, the MCP
+tool `typing_status`) is best effort. On macOS 15 and earlier the helper sees each bubble arrive. On macOS 26 and
+later, Messages only takes in typing for the conversation it has on screen, and imbridge runs it hidden: tested on
+macOS 27 with a person typing, the Mac showed her bubble only with her conversation open, and the helper never saw it.
 
 **Contact names.** imbridge reads names from your Contacts (read-only; the Full Disk Access that reads `chat.db`
 covers it): a message's `sender_name`, and a chat's `names` for the people in it. The MCP server shows them too, so a
@@ -468,8 +479,8 @@ itself.
 | `message_status` | whether a message you sent was delivered, read, or failed |
 | `send_later`, `list_scheduled`, `cancel_scheduled` | Send Later: schedule a message, see what's waiting, cancel it |
 | `edit_message`, `unsend_message` | change or take back a message it sent, within iMessage's limits |
-| `show_typing` | the typing indicator |
-| `typing_status` | whether someone in a chat is typing right now (best effort on macOS 26+) |
+| `show_typing` | show or hide your typing bubble, group chats included |
+| `typing_status` | whether someone in a chat is typing right now (macOS 15 and earlier; see Typing above) |
 | `whoami` | the address it answers on and the chats it may send to |
 
 Sending goes through the same allowlist, address rules and rate limits as the library. A refused send tells the model
