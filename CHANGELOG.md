@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (2026-09-27)
 
 - Incoming typing: `im.is_typing(chat)`, `await im.wait_while_typing(chat, timeout=30)` (so a bot doesn't answer
   half a thought) and `im.typing_changes()` follow the other person's typing bubble from the helper's notices, once

@@ -66,7 +66,7 @@ As of September 2026, from each project's code:
 | MCP server | ✓ | ✗ | ✗ | ✗ |
 | Sends only to chats you allowed | ✓ | ✗ | ✗ | ✗ |
 | Needs SIP disabled | yes | for Private API features | for its helper's features | yes |
-| Latest release | 0.5.0, September 2026 | 1.9.9, May 2025 | 0.15.9, September 2026 | 0.2.3, September 2026 |
+| Latest release | 0.6.0, September 2026 | 1.9.9, May 2025 | 0.15.9, September 2026 | 0.2.3, September 2026 |
 
 ¹ Each vote carries only the newly chosen option, so voting for a second option replaces the first. imbridge sends
 your whole current choice under the poll's own session, the way Messages does.
