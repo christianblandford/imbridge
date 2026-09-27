@@ -8,6 +8,7 @@ from pathlib import Path
 
 APP_SUPPORT = Path.home() / "Library" / "Application Support" / "imbridge"
 CHAT_DB = Path.home() / "Library" / "Messages" / "chat.db"
+ADDRESS_BOOK = Path.home() / "Library" / "Application Support" / "AddressBook"  # Contacts' own databases
 # Files we send are copied here first: Messages is sandboxed and can only read files inside ~/Library/Messages. The
 # copy then becomes the attachment itself (chat.db points at it), like every other file in Messages' Attachments.
 OUTGOING = Path.home() / "Library" / "Messages" / "Attachments" / "imbridge"

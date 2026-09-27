@@ -13,6 +13,7 @@ from pathlib import Path
 from . import config, messages_app
 from .addresses import is_phone
 from .chatdb import ChatDB, FullDiskAccessError
+from .contacts import Contacts
 from .guard import ANY_LINE, read_allowed
 
 PRIVATE_FRAMEWORKS = ("IMCore", "IMSharedUtilities", "IMDPersistence", "IDS", "FMF")
@@ -89,6 +90,14 @@ def run_checks(dylib: Path | None = None) -> list[Check]:
         db = ChatDB()
         count = db.max_rowid()
         checks.append(Check("Full Disk Access (reading chat.db)", True, f"{count:,} messages readable"))
+        contacts = Contacts()
+        contacts.name("+10000000000")  # loads them
+        checks.append(
+            Check("Contact names", True, f"{contacts.cards:,} contacts with a number or email")
+            if contacts.cards
+            else Check("Contact names", None, "none readable, so people show as numbers and emails",
+                       "if you have contacts, give the app you run Python from Full Disk Access (it covers Contacts)")
+        )
         phones = [address for address in db.my_addresses() if is_phone(address)]
         chosen = os.environ.get("IMBRIDGE_ADDRESS")
         if chosen:

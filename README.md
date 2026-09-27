@@ -232,6 +232,7 @@ async with IMBridge(allow=["+15551234567"]) as im:
 
     await im.send("+15557654321", "hi")                   # allowed as NewContact("+15557654321"): starts a chat
     im.chats(20)                                          # recent chats, newest first; each has .can_send
+    im.chats(query="alex")                                # by name, or someone in it: number, email or contact name
     im.message(guid)                                      # one message, or None
     im.search("dinner", limit=20, before=last)            # every chat: newest first, then page on
     im.poll(guid)                                         # a poll's options, votes and question (from any of its messages)
@@ -304,6 +305,7 @@ Every `Message` has these fields:
 | `guid`, `rowid` | the message's ID, and its row in chat.db |
 | `chat_guid`, `is_group`, `chat_name` | where it was sent |
 | `sender`, `is_from_me` | the sender's phone number or email; `None` when you sent it |
+| `sender_name` | the sender's name in your Contacts, when they're in them |
 | `text`, `date`, `service` | the text (decoded from `attributedBody` when needed), a UTC datetime, and `iMessage`/`SMS`/`RCS` |
 | `reply_to` | the GUID of the message this is an inline reply to |
 | `reaction` | set when the row is a tapback: `kind` (`love`…`question`, `emoji`, `sticker_tapback`, or `sticker` for one stuck on the bubble), `emoji`, `removed`, `target_guid`, `target_part` |
@@ -318,6 +320,12 @@ Every `Message` has these fields:
 | `vote` | set when the message is a vote in a poll: `poll_guid` and `options`, the voter's whole current choice (empty when they took it back) |
 | `event` | set when the row is a change to a group rather than a message (streams and history include these with `include_events=True`): `kind` (`added`, `removed`, `left`, `renamed`, `photo_changed`, `photo_removed`, `other`), `person` (who was added, removed or left; `None` is you), `name` (for `renamed`) and `code`. `sender` is who made the change. |
 | `address` | which of your addresses it was sent to (or, for your own messages, sent from) |
+
+**Contact names.** imbridge reads names from your Contacts (read-only; the Full Disk Access that reads `chat.db`
+covers it): a message's `sender_name`, and a chat's `names` for the people in it. The MCP server shows them too, so a
+model sees "Alex Rivera" rather than a number. A number matches a contact the same strict way imbridge matches
+numbers everywhere, and a number on two cards with different names gets no name. `IMBridge(contacts=False)` turns
+it off.
 
 **Options.** `IMBridge(allow=..., address=..., max_per_chat=10, max_total=30)` are covered above. `inject=True` loads the helper
 into Messages whenever none answers; pass `inject=False` if something else manages Messages. `poll_interval` (default
@@ -380,7 +388,7 @@ imbridge send-poll +15551234567 Pizza Sushi [--question "Lunch?"]
 imbridge vote GUID Pizza [--remove]                  # the poll's GUID; keeps your other choices
 imbridge reply GUID "inline reply"
 imbridge react GUID 🔥 [--remove]
-imbridge chats [-n 20] [--json]
+imbridge chats [-n 20] [--query alex] [--json]
 imbridge history +15551234567 [-n 20] [--before GUID | --after GUID] [--json]
 imbridge search "dinner" [--chat CHAT] [-n 20] [--before GUID] [--json]   # newest first
 imbridge poll GUID [--json]                          # a poll's question, options and votes
@@ -413,7 +421,7 @@ itself.
 
 | tool | |
 |---|---|
-| `list_chats` | recent chats, and whether the agent may send in each (`can_send`); `offset` pages on |
+| `list_chats` | recent chats, whether the agent may send in each (`can_send`), and people's names from Contacts; `query` finds a chat by name or person, `offset` pages on |
 | `read_messages` | a chat's latest messages; `before` and `after` page through its history |
 | `search_messages` | messages containing some text, in one chat or all, newest first |
 | `check_messages` | messages since the last check; `wait_seconds` waits for a reply |

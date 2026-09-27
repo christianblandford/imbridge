@@ -66,6 +66,8 @@ def _message(message: Message) -> dict[str, Any]:
         "text": message.text,
         "date": message.date.astimezone().isoformat() if message.date else None,
     }
+    if message.sender_name:
+        item["from_name"] = message.sender_name
     if message.chat_name:
         item["chat_name"] = message.chat_name
     if message.unsent_at:
@@ -100,7 +102,7 @@ def _message(message: Message) -> dict[str, Any]:
 
 
 def _chat(chat: Chat) -> dict[str, Any]:
-    return {
+    item = {
         "chat": chat.guid,
         "name": chat.name,
         "participants": list(chat.participants),
@@ -108,6 +110,9 @@ def _chat(chat: Chat) -> dict[str, Any]:
         "last_message_at": chat.last_message_at.astimezone().isoformat() if chat.last_message_at else None,
         "can_send": chat.can_send,
     }
+    if chat.names:
+        item["names"] = chat.names  # participants' names in the user's Contacts
+    return item
 
 
 def _when(value: str) -> datetime:
@@ -163,12 +168,12 @@ def build_server(im: IMBridge) -> MCPServer:
         pass  # check_messages reports it when called
 
     @server.tool(annotations=READS)
-    def list_chats(limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
-        """Recent iMessage chats, newest first. `chat` identifies each one; `can_send` says if you may send there.
-        For older chats, raise `offset` by `limit`."""
+    def list_chats(limit: int = 20, offset: int = 0, query: str | None = None) -> list[dict[str, Any]]:
+        """Recent iMessage chats, newest first. `chat` identifies each one; `can_send` says if you may send there;
+        `names` gives people's names from the user's Contacts. `query` finds chats by name, or by someone in them (a
+        number, email or name). For older chats, raise `offset` by `limit`."""
         try:
-            offset = max(0, offset)
-            return [_chat(chat) for chat in im.chats(offset + max(1, min(limit, 100)))[offset:]]
+            return [_chat(chat) for chat in im.chats(max(1, min(limit, 100)), query=query, offset=max(0, offset))]
         except Exception as error:
             raise _refusal(error) from error
 

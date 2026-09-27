@@ -32,6 +32,8 @@ _EVENTS = {
 def describe(message: Message) -> str:
     when = message.date.astimezone().strftime("%H:%M:%S") if message.date else "--:--:--"
     who = "me" if message.is_from_me else (message.sender or "?")
+    if message.sender_name:
+        who = f"{message.sender_name} ({message.sender})"
     where = message.chat_name or message.chat_guid or "?"
     if message.address:
         where += f" via {message.address}"
@@ -86,7 +88,7 @@ def _when(value: str) -> datetime:
 
 
 def _label(chat: Chat) -> str:
-    return chat.name or ", ".join(chat.participants) or chat.guid
+    return chat.name or ", ".join(chat.names.get(person, person) for person in chat.participants) or chat.guid
 
 
 def _bridge(args: argparse.Namespace, *, inject: bool = True) -> IMBridge:
@@ -348,6 +350,7 @@ def _parser() -> argparse.ArgumentParser:
 
     chats = commands.add_parser("chats", help="list recent chats")
     chats.add_argument("-n", type=int, default=20, help="how many (default 20)")
+    chats.add_argument("--query", help="only chats whose name, or someone in them (number, email, name), has this")
     chats.add_argument("--json", action="store_true", help="one JSON object per line")
 
     focus = commands.add_parser("focus", parents=[mine], help="whether someone has notifications silenced")
@@ -404,7 +407,7 @@ def main(argv: list[str] | None = None) -> int:
             return _mcp(args)
         im = _bridge(args, inject=False)
         if args.command == "chats":
-            for chat in im.chats(args.n):
+            for chat in im.chats(args.n, query=args.query):
                 if args.json:
                     print(json.dumps({**chat.to_dict(), "can_send": chat.can_send}, ensure_ascii=False))
                 else:

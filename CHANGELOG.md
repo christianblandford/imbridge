@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Contact names: `Message.sender_name` and `Chat.names` come from your Contacts (read-only, under the same Full Disk
+  Access as chat.db), matched with the same strict rules as everywhere else in imbridge; a number on cards with
+  different names gets none. `im.contact_name(address)` looks one up, and `im.chats(query=...)` (`imbridge chats
+  --query`, the MCP `list_chats` `query`) finds chats by name, number, email or contact name. The MCP server adds
+  `from_name` to messages and `names` to chats; the CLI shows names. `IMBridge(contacts=False)` turns it off, and
+  `imbridge doctor` says how many contacts it can read.
 - Search: `im.search(query, chat=None, limit=20, before=None)` and `chat.search(query)` find messages containing
   some text (ignoring case), newest first, in one chat or all, including text Messages keeps only in the attributed
   body. `imbridge search` and the MCP tool `search_messages` do the same. `before` pages on.

@@ -38,6 +38,7 @@ from .addresses import (
     same_address,
 )
 from .chatdb import APPLE_EPOCH, ChatDB, ChatInfo, Message
+from .contacts import Contacts
 from .guard import AnyChat, SendGuard, one_to_one_handle
 from .links import is_public, preview_urls, web_url
 from .locations import make_pin
@@ -154,6 +155,17 @@ def _chosen(guid: str | None) -> str | None:
         raise ValueError(f"{guid!r} isn't a UUID; make one with str(uuid.uuid4())") from None
 
 
+def _chat_matches(info: ChatInfo, query: str) -> bool:
+    """Whether a chat's name, or someone in it (number, email, or name in Contacts), contains query."""
+    wanted = query.casefold()
+    values = [info.name, info.identifier, *info.participants, *info.names.values()]
+    if any(wanted in (value or "").casefold() for value in values):
+        return True
+    digits = re.sub(r"\D", "", query)  # a number as someone might type it: "(555) 123-45"
+    return (len(digits) >= 4 and re.fullmatch(r"[\d\s().+-]+", query) is not None
+            and any(digits in re.sub(r"\D", "", handle) for handle in info.participants if "@" not in handle))
+
+
 def helper_build(dylib: Path) -> str | None:
     """The build a helper dylib says it is (helper/build.sh marks it "IMBRIDGE_BUILD=<build>"), or None."""
     try:
@@ -224,6 +236,11 @@ class Chat:
     @property
     def is_group(self) -> bool:
         return self.info.is_group
+
+    @property
+    def names(self) -> dict[str, str]:
+        """The names in your Contacts of the people in it, for those who are in them."""
+        return self.info.names
 
     @property
     def participants(self) -> tuple[str, ...]:
@@ -407,6 +424,8 @@ class IMBridge:
     max_per_chat, max_total: messages and tapbacks per minute, per chat and in total, across all imbridge processes.
     inject: load the helper into Messages (restarting Messages) when none answers, or when the one that answers is
         from another imbridge build (as after an upgrade, until Messages restarts).
+    contacts: name people from your Contacts (Message.sender_name, Chat.names). Read-only, and only for the people in
+        the messages and chats imbridge reads.
     """
 
     def __init__(
@@ -422,6 +441,7 @@ class IMBridge:
         chat_db: Path | str = config.CHAT_DB,
         inject: bool = True,
         poll_interval: float = 0.5,
+        contacts: bool = True,
     ) -> None:
         if address is None and (env := os.environ.get("IMBRIDGE_ADDRESS", "").strip()):
             address = ANY_ADDRESS if env.lower() == "any" else env
@@ -432,7 +452,8 @@ class IMBridge:
         self.dylib = Path(dylib) if dylib else config.helper_dylib()
         self.inject = inject
         self.poll_interval = poll_interval
-        self.db = ChatDB(chat_db)
+        self.contacts = Contacts() if contacts else None
+        self.db = ChatDB(chat_db, names=self.contacts.name if self.contacts else None)
         self._guard = SendGuard(allow, resolve=self.resolve_chat, max_per_chat=max_per_chat, max_total=max_total)
         self._server = HelperServer(port or config.helper_port(), token or config.helper_token())
         # The chat of each message we sent, so replies and tapbacks work before chat.db catches up.
@@ -471,12 +492,22 @@ class IMBridge:
         guid = self.resolve_chat(chat)
         return Chat(self, self.db.chat(guid) or ChatInfo(guid, None, None, None, False, (), None))
 
-    def chats(self, limit: int = 50) -> list[Chat]:
-        """Chats, most recently active first; with an address set, only the chats on it."""
-        if self._address_key is None:
-            return [Chat(self, info) for info in self.db.chats(limit)]
-        on_address = [info for info in self.db.chats(limit * 5) if address_key(info.address) == self._address_key]
-        return [Chat(self, info) for info in on_address[:limit]]
+    def chats(self, limit: int = 50, *, query: str | None = None, offset: int = 0) -> list[Chat]:
+        """Chats, most recently active first; with an address set, only the chats on it. query keeps those whose name,
+        or someone in them (their number, email or name in your Contacts), contains it. offset skips that many."""
+        wanted = (query or "").strip()
+        if self._address_key is None and not wanted:
+            return [Chat(self, info) for info in self.db.chats(limit + offset)[offset:]]
+        found = self.db.chats(-1)  # every chat (a few thousand read in milliseconds), then filtered
+        if self._address_key is not None:
+            found = [info for info in found if address_key(info.address) == self._address_key]
+        if wanted:
+            found = [info for info in found if _chat_matches(info, wanted)]
+        return [Chat(self, info) for info in found[offset : offset + limit]]
+
+    def contact_name(self, address: str) -> str | None:
+        """The name on someone's card in your Contacts (a phone number or email), or None."""
+        return self.contacts.name(address) if self.contacts else None
 
     def supports(self, feature: str) -> bool:
         """Whether this Mac's macOS has a feature: a key of FEATURES, like "polls" (macOS 26) or "send_later"

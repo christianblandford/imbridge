@@ -10,8 +10,8 @@ import plistlib
 import re
 import sqlite3
 import time
-from collections.abc import Iterable, Iterator
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Iterable, Iterator
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -72,6 +72,7 @@ class Message:
     service: str | None  # "iMessage", "SMS", "RCS"
     is_group: bool = False
     chat_name: str | None = None  # a group's name, if it has one
+    sender_name: str | None = None  # the sender's name in your Contacts, when they're in them
     reply_to: str | None = None  # guid of the message this is an inline reply to
     reaction: Reaction | None = None  # set when this row is a tapback or sticker
     attachments: tuple[Attachment, ...] = ()
@@ -106,6 +107,7 @@ class ChatInfo:
     participants: tuple[str, ...]
     last_message_at: datetime | None
     address: str | None = None  # which of your addresses the conversation is on (what Messages sends from)
+    names: dict[str, str] = field(default_factory=dict)  # participants' names in your Contacts, for those in them
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -118,8 +120,9 @@ class MessageNotFound(LookupError):
 
 
 class ChatDB:
-    def __init__(self, path: Path | str = CHAT_DB) -> None:
+    def __init__(self, path: Path | str = CHAT_DB, *, names: Callable[[str], str | None] | None = None) -> None:
         self.path = Path(path)
+        self.names = names  # who an address is (Contacts.name): for sender_name and ChatInfo.names
         self._db: sqlite3.Connection | None = None
         self._select = ""
         self._last_activity = ""
@@ -324,6 +327,7 @@ class ChatDB:
         chats = []
         for row in rows:
             participants = tuple(members.get(row["rowid"], ()))
+            known = {handle: self.names(handle) for handle in participants} if self.names else {}
             chats.append(
                 ChatInfo(
                     guid=row["guid"],
@@ -334,6 +338,7 @@ class ChatDB:
                     participants=participants,
                     last_message_at=apple_time(row["last_date"]),
                     address=display_address(row["address"]),
+                    names={handle: name for handle, name in known.items() if name},
                 )
             )
         return chats
@@ -460,12 +465,14 @@ class ChatDB:
                 text = None  # a placeholder, or the fallback text
             elif row["poll_before"] and text and text == fallback_text(row["poll_before"]) and not fallbacks:
                 continue  # the "Sent a poll" Messages sends along with a poll, and doesn't show
+            sender = None if row["is_from_me"] else row["sender"]
             messages.append(
                 Message(
                     rowid=row["rowid"],
                     guid=row["guid"],
                     chat_guid=row["chat_guid"],
-                    sender=None if row["is_from_me"] else row["sender"],
+                    sender=sender,
+                    sender_name=self.names(sender) if sender and self.names else None,
                     is_from_me=bool(row["is_from_me"]),
                     text=text,
                     date=apple_time(row["date"]),
