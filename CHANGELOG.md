@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-09-27)
 
 - Voice messages: `Message.is_voice` and `Message.transcript` (Messages' own transcription, read from the message's
   attributes; `await im.transcript(message)` waits for it). `send_voice(chat, path)` sends audio and
