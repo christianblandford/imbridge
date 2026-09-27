@@ -13,6 +13,9 @@
   learns more there. The MCP output marks messages that weren't delivered, and the tool `message_status` checks one.
   `imbridge history` flags messages that weren't delivered.
 - `imbridge typing CHAT [--off]` shows or hides your typing indicator.
+- `imbridge doctor --live` tries every feature for real in your note-to-self chat, checks each in chat.db, and says
+  what works on this Mac (features its macOS lacks are skipped). It asks first, and only writes to a chat where both
+  ends are addresses of the account signed in to Messages. On macOS 27: 16 worked, Send Later skipped.
 
 ## 0.6.0 (2026-09-27)
 

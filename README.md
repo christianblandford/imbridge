@@ -398,6 +398,7 @@ the Mac, one higher for each further account). `IMBRIDGE_HELPER` loads a helper 
 
 ```bash
 imbridge doctor                        # check this Mac's setup
+imbridge doctor --live [--yes]         # then try every feature in your note-to-self chat
 imbridge start                         # load the helper into Messages
 imbridge allow CHAT | --any            # let imbridge send to a chat (asks you to confirm)
 imbridge disallow CHAT | --any
@@ -517,6 +518,11 @@ read `chat.db`.
 - Run **`imbridge doctor`** first. Before anything is loaded, it checks SIP, the boot-arg, library validation, Full
   Disk Access, and that every private API the helper calls still exists on your macOS. That last check matters after
   macOS updates: a helper that calls something Apple removed would crash Messages on launch.
+- **`imbridge doctor --live`** then tries every feature for real, in your note-to-self chat: a message, formatting,
+  a reply, tapbacks, an edit, a file, a sticker, a pin, a link preview, a voice message, a poll and a vote, typing,
+  an unsend, delivery and search, each checked in `chat.db`. It asks before sending anything (about 15 messages, each
+  marked 🧪), skips what the Mac's macOS doesn't have, and says which features work. Run it on a new Mac, or after a
+  macOS update, before trusting an agent with it. It only ever writes to the chat where you are on both ends.
 - **`SendNotAllowed`:** allow the chat in your code (`IMBridge(allow=[...])`), or with `imbridge allow` in your own
   terminal.
 - **Helper logs:** `log stream --predicate 'subsystem == "imbridge"'`

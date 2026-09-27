@@ -12,7 +12,7 @@ from . import __version__
 from .addresses import ANY_ADDRESS, AddressNotChosen, WrongAddress, contact_address
 from .chatdb import FullDiskAccessError, Message, MessageNotFound
 from .client import EFFECTS, Chat, ChatNotFound, EditLimit, IMBridge, SendLaterFailed, TypingChange, WrongChat
-from .doctor import run_checks
+from .doctor import Check, run_checks
 from .guard import ANY_LINE, RateLimited, SendNotAllowed, read_allowed, write_allowed
 from .polls import PollResults
 from .protocol import HelperError
@@ -116,14 +116,49 @@ def _print_message(message: Message, as_json: bool) -> None:
     print(json.dumps(message.to_dict(), ensure_ascii=False) if as_json else describe(message), flush=True)
 
 
-def _doctor() -> int:
+def _doctor(args: argparse.Namespace) -> int:
     checks = run_checks()
     for check in checks:
-        mark = {True: "✓", False: "✗", None: "·"}[check.ok]
-        print(f"{mark} {check.name}: {check.detail}")
-        if check.fix and check.ok is not True:
-            print(f"    {'fix' if check.ok is False else 'next'}: {check.fix}")
-    return 1 if any(check.ok is False for check in checks) else 0
+        _print_check(check)
+    if any(check.ok is False for check in checks):
+        if args.live:
+            print("imbridge: fix what's above before the live checks", file=sys.stderr)
+        return 1
+    return asyncio.run(_live_checks(args)) if args.live else 0
+
+
+def _print_check(check: Check) -> None:
+    mark = {True: "✓", False: "✗", None: "·"}[check.ok]
+    print(f"{mark} {check.name}: {check.detail}", flush=True)
+    if check.fix and check.ok is not True:
+        print(f"    {'fix' if check.ok is False else 'next'}: {check.fix}", flush=True)
+
+
+async def _live_checks(args: argparse.Namespace) -> int:
+    """Try each feature in your note-to-self chat (see selftest.py)."""
+    from .selftest import find_self_chat, run_live_checks
+
+    async with _bridge(args) as im:
+        chat = await find_self_chat(im)
+    if chat is None:
+        print("imbridge: there's no chat with yourself yet: send yourself a message in Messages, then try again",
+              file=sys.stderr)
+        return 1
+    print(f"\nLive checks in your note-to-self chat ({chat}): about 15 test messages, each marked 🧪.")
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print("imbridge: run it in a terminal to confirm, or pass --yes", file=sys.stderr)
+            return 1
+        if input("Send them? [y/N] ").strip().lower() not in ("y", "yes"):
+            return 1
+    address = getattr(args, "address", None)
+    im = IMBridge(address=ANY_ADDRESS if address and address.lower() == "any" else address, allow=[chat],
+                  max_per_chat=60, max_total=60)  # only your own chat, and quicker than the usual limits allow
+    async with im:
+        results = await run_live_checks(im, chat, _print_check)
+    passed, failed = sum(r.ok is True for r in results), sum(r.ok is False for r in results)
+    print(f"{passed} worked, {failed} failed, {len(results) - passed - failed} skipped or unclear")
+    return 1 if failed else 0
 
 
 def _allow(args: argparse.Namespace) -> int:
@@ -300,7 +335,10 @@ def _parser() -> argparse.ArgumentParser:
         help="which of your own addresses this is (phone number or email), or 'any'; default $IMBRIDGE_ADDRESS",
     )
 
-    commands.add_parser("doctor", help="check that this Mac is set up for imbridge")
+    doctor = commands.add_parser("doctor", parents=[mine], help="check that this Mac is set up for imbridge")
+    doctor.add_argument("--live", action="store_true",
+                        help="then try each feature in your note-to-self chat (sends you about 15 test messages)")
+    doctor.add_argument("--yes", action="store_true", help="with --live, don't ask first")
     commands.add_parser(
         "start", parents=[mine],
         help="load the helper into Messages (restarting it, hidden, unless it's loaded) and wait until it answers",
@@ -429,7 +467,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if args.command == "doctor":
-            return _doctor()
+            return _doctor(args)
         if args.command == "allow":
             return _allow(args)
         if args.command == "disallow":
