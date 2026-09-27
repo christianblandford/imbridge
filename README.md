@@ -95,6 +95,10 @@ your Python  ──────────────────────�
 ## Requirements
 
 - An **Apple Silicon** Mac signed in to iMessage in Messages. Built for macOS 11.5 and later; tested on macOS 27.0.
+  Some features need a newer macOS on that Mac: polls need 26; Send Later, emoji and sticker tapbacks, and formatting
+  need 15; stickers need 14; edits and unsends need 13. `im.supports("polls")` tells you. On an older macOS those
+  calls raise `Unsupported`, and the MCP server leaves out their tools. The people you message need the matching iOS
+  or macOS to see these features: on older versions, Messages shows only a poll's "Sent a poll" text, for example.
 - **Python 3.10** or later.
 - **System Integrity Protection disabled**, plus two related settings (below). macOS allows no other way to load a
   helper into Messages; BlueBubbles' Private API and imsg's helper have the same requirement.
@@ -319,7 +323,8 @@ touches `chat.db`, so it works without the helper.
 
 **Errors.** `SendNotAllowed` means the chat isn't allowed. `RateLimited` means a limit was hit. `EditLimit` means
 iMessage's own limits on editing or unsending have passed (`kind` says which). `SendLaterFailed` means Messages
-didn't hold (or cancel) a Send Later message as asked. `AddressNotChosen`
+didn't hold (or cancel) a Send Later message as asked. `Unsupported` means this Mac's macOS is too old for the
+feature. `AddressNotChosen`
 means this Mac gets messages at several of your phone numbers and the program hasn't said which it is. `WrongAddress`
 means a chat or message is on another of your addresses, or a new conversation would start from one. `WrongChat`
 means a chat was handed another chat's message. `ChatNotFound` means no existing conversation matches, and it isn't

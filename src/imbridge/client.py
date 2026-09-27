@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import tempfile
@@ -19,6 +20,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +60,19 @@ SCHEDULE_HELD = 2  # message.schedule_state once Apple's servers hold a Send Lat
 STICKER_TYPES = (".png", ".heic", ".heics", ".gif", ".jpg", ".jpeg", ".webp")
 MAX_POLL_BYTES = 4096  # a poll's options, as Messages encodes them, must fit in this
 LINK_TIMEOUT = 15.0  # seconds Messages gets to load a link's preview before it goes as a plain link
+# The macOS each feature needs on this Mac; the people you message need the matching iOS or macOS to see it. Messages
+# on an older macOS doesn't even keep a poll someone sends: only its "Sent a poll" text.
+FEATURES = {
+    "focus_status": 12,
+    "edits": 13,
+    "unsend": 13,
+    "stickers": 14,
+    "emoji_tapbacks": 15,
+    "sticker_tapbacks": 15,
+    "formatting": 15,  # bold, italics, underline, strikethrough and text effects
+    "send_later": 15,
+    "polls": 26,
+}
 
 
 @dataclass
@@ -105,6 +120,17 @@ class WrongChat(ValueError):
 
 class SendLaterFailed(RuntimeError):
     """Messages didn't hold a message for later as asked (or didn't cancel it); the message says what it did."""
+
+
+class Unsupported(RuntimeError):
+    """This Mac's macOS is too old for the feature (see FEATURES and IMBridge.supports). Nothing was sent."""
+
+
+@cache
+def macos_version() -> tuple[int, int]:
+    """This Mac's macOS version, as (major, minor)."""
+    parts = [int(part) for part in platform.mac_ver()[0].split(".")[:2] if part.isdigit()]
+    return (parts + [0, 0])[0], (parts + [0, 0])[1]
 
 
 def _poll_size(options: list[str], creator: str) -> int:
@@ -440,6 +466,18 @@ class IMBridge:
         on_address = [info for info in self.db.chats(limit * 5) if address_key(info.address) == self._address_key]
         return [Chat(self, info) for info in on_address[:limit]]
 
+    def supports(self, feature: str) -> bool:
+        """Whether this Mac's macOS has a feature: a key of FEATURES, like "polls" (macOS 26) or "send_later"
+        (macOS 15). The features themselves raise Unsupported where it doesn't."""
+        if feature not in FEATURES:
+            raise ValueError(f"unknown feature {feature!r}; features: {', '.join(FEATURES)}")
+        return macos_version() >= (FEATURES[feature], 0)
+
+    def _require(self, feature: str, what: str) -> None:
+        if not self.supports(feature):
+            major, minor = macos_version()
+            raise Unsupported(f"{what} need macOS {FEATURES[feature]} or later on this Mac, which has {major}.{minor}")
+
     def resolve_chat(self, chat: str) -> str:
         """The chat GUID for a chat GUID, a phone number or email (its one-to-one chat), or a group's name."""
         if ";" in chat:
@@ -542,6 +580,7 @@ class IMBridge:
         guid is one you choose for the poll, as in send(). The question's GUID then follows from it (question_guid),
         so sending the pair again with the same guid delivers neither twice.
         """
+        self._require("polls", "polls")
         guid = _chosen(guid)
         choices = [option.strip() for option in options]
         if len(choices) < 2 or not all(choices):
@@ -581,6 +620,7 @@ class IMBridge:
         return await self._vote(poll, options, chat, add=False)
 
     async def _vote(self, poll: Message | str, options: tuple[str, ...], chat: str | None, *, add: bool) -> str | None:
+        self._require("polls", "polls")
         guid = poll.guid if isinstance(poll, Message) else parse_target(poll)[0]
         results = await asyncio.to_thread(self.poll, guid)
         if results is None or results.chat_guid is None:
@@ -769,6 +809,7 @@ class IMBridge:
         local time), whether or not this program is still running. The allowlist and rate limits apply now, when
         it's scheduled. imbridge checks Messages held it in the right chat, and raises SendLaterFailed if not.
         """
+        self._require("send_later", "Send Later messages")
         text = text.strip()
         if not text:
             raise ValueError("there's no text to send")

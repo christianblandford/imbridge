@@ -10,6 +10,7 @@ send loads the helper into Messages.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -35,13 +36,21 @@ These tools read and send iMessages on the user's Mac, through Messages.app.
 - You can only send in chats the user has allowed; list_chats shows which (can_send). Only the user can allow a chat,
   from their own terminal. If a send is refused, tell the user why instead of looking for another way to send.
 - Messages go to real people and can't be taken back, so be sure before you send.
-- A poll arrives as a message with `poll` (its options), and a vote as one with `vote`; read_poll shows the current
-  tally and the question sent with the poll.
-- send_later schedules a message with Messages' Send Later; list_scheduled and cancel_scheduled manage what's
-  waiting.
-- To share a link, send it on its own with send_link: the recipient sees a card with the page's title and picture,
-  as when a person pastes a link. A link inside send_message text stays plain text.
+{polls}{send_later}- To share a link, send it on its own with send_link: the recipient sees a card with the
+  page's title and picture, as when a person pastes a link. A link inside send_message text stays plain text.
 """
+
+# Lines of INSTRUCTIONS for tools that only some macOS versions have.
+FEATURE_INSTRUCTIONS = {
+    "polls": (
+        "- A poll arrives as a message with `poll` (its options), and a vote as one with `vote`; read_poll shows the\n"
+        "  current tally and the question sent with the poll.\n"
+    ),
+    "send_later": (
+        "- send_later schedules a message with Messages' Send Later; list_scheduled and cancel_scheduled manage\n"
+        "  what's waiting.\n"
+    ),
+}
 
 READS = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 SENDS = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True)
@@ -129,7 +138,17 @@ def _refusal(error: Exception) -> ToolError:
 
 
 def build_server(im: IMBridge) -> MCPServer:
-    server = MCPServer("imbridge", instructions=INSTRUCTIONS, version=__version__)
+    """The MCP server's tools, less those this Mac's macOS doesn't have (like polls before macOS 26)."""
+    instructions = INSTRUCTIONS.format(
+        **{feature: text if im.supports(feature) else "" for feature, text in FEATURE_INSTRUCTIONS.items()}
+    )
+    server = MCPServer("imbridge", instructions=instructions, version=__version__)
+
+    def tool(feature: str | None = None, **options: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        if feature is not None and not im.supports(feature):
+            return lambda function: function  # not offered on this macOS
+        return server.tool(**options)
+
     cursors: dict[str | None, int] = {}  # per chat (None: every chat), the chat.db ROWID checked up to
     started: list[int] = []  # the ROWID when this server started: where every first check begins
 
@@ -179,7 +198,7 @@ def build_server(im: IMBridge) -> MCPServer:
         except Exception as error:
             raise _refusal(error) from error
 
-    @server.tool(annotations=READS)
+    @tool("polls", annotations=READS)
     def read_poll(message_guid: str) -> dict[str, Any]:
         """A poll's question, options, and votes per option with who cast them ("me" is the user). Takes the poll's
         message guid, or a vote's."""
@@ -227,7 +246,7 @@ def build_server(im: IMBridge) -> MCPServer:
         except Exception as error:
             raise _refusal(error) from error
 
-    @server.tool(annotations=SENDS)
+    @tool("polls", annotations=SENDS)
     async def send_poll(chat: str, options: list[str], question: str | None = None) -> dict[str, Any]:
         """Send a poll to an allowed chat: two or more options, and optionally a question, which goes out as a
         message right after the poll (Messages doesn't show poll titles). Returns the poll's guid."""
@@ -236,7 +255,7 @@ def build_server(im: IMBridge) -> MCPServer:
         except Exception as error:
             raise _refusal(error) from error
 
-    @server.tool(annotations=SENDS)
+    @tool("polls", annotations=SENDS)
     async def vote(message_guid: str, option: str, remove: bool = False) -> dict[str, Any]:
         """Vote for an option in a poll (by its text), keeping the user's other choices; remove=true takes that vote
         back. message_guid is the poll's guid, or a vote's in it."""
@@ -265,7 +284,7 @@ def build_server(im: IMBridge) -> MCPServer:
         except Exception as error:
             raise _refusal(error) from error
 
-    @server.tool(annotations=SENDS)
+    @tool("send_later", annotations=SENDS)
     async def send_later(chat: str, text: str, at: str) -> dict[str, Any]:
         """Schedule a message with Messages' Send Later: it goes out at the start of that minute even if nothing is
         running then. `at` is an ISO 8601 date and time, like 2026-09-27T09:00 (local time) or with an offset;
@@ -275,7 +294,7 @@ def build_server(im: IMBridge) -> MCPServer:
         except Exception as error:
             raise _refusal(error) from error
 
-    @server.tool(annotations=READS)
+    @tool("send_later", annotations=READS)
     def list_scheduled(chat: str | None = None) -> list[dict[str, Any]]:
         """Messages waiting in Send Later (in one chat, or all), soonest first, each with scheduled_for."""
         try:
@@ -283,7 +302,7 @@ def build_server(im: IMBridge) -> MCPServer:
         except Exception as error:
             raise _refusal(error) from error
 
-    @server.tool(annotations=CHANGES)
+    @tool("send_later", annotations=CHANGES)
     async def cancel_scheduled(message_guid: str) -> dict[str, Any]:
         """Take back a message waiting in Send Later, before it goes out."""
         try:
@@ -292,7 +311,7 @@ def build_server(im: IMBridge) -> MCPServer:
         except Exception as error:
             raise _refusal(error) from error
 
-    @server.tool(annotations=CHANGES)
+    @tool("edits", annotations=CHANGES)
     async def edit_message(message_guid: str, text: str) -> dict[str, Any]:
         """Change the text of a message you sent; readers see it marked Edited. iMessage allows 5 edits within
         15 minutes of sending."""
@@ -302,7 +321,7 @@ def build_server(im: IMBridge) -> MCPServer:
         except Exception as error:
             raise _refusal(error) from error
 
-    @server.tool(annotations=CHANGES)
+    @tool("unsend", annotations=CHANGES)
     async def unsend_message(message_guid: str) -> dict[str, Any]:
         """Take back a message you sent, for everyone in the chat. iMessage allows it within 2 minutes of sending."""
         try:
@@ -320,7 +339,7 @@ def build_server(im: IMBridge) -> MCPServer:
         except Exception as error:
             raise _refusal(error) from error
 
-    @server.tool(annotations=READS)
+    @tool("focus_status", annotations=READS)
     async def focus_status(person: str) -> dict[str, Any]:
         """Whether someone has notifications silenced by a Focus (so a reply may take a while). `person` is a phone
         number or email, or a one-to-one chat id. `silenced` is null when they don't share their Focus status."""

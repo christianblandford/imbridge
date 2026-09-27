@@ -20,6 +20,10 @@
   when it connects (helper/patches/0014-helper-build.patch; `helper/build.sh` names it from the patches), and
   imbridge reloads Messages once when that isn't the build it ships (with `inject=False` it logs a warning instead).
   `imbridge start` now restarts Messages only when it has to.
+- `im.supports(feature)` says whether this Mac's macOS has a feature (`FEATURES`: polls need macOS 26, Send Later
+  15, and so on). Polls and Send Later raise `Unsupported` on an older macOS before anything is sent, instead of going
+  ahead on a Mac without the feature (Messages before macOS 26 shows only a poll's "Sent a poll" text). The MCP
+  server leaves out the tools this Mac can't use.
 - `Message.attachments` leaves out attachments Messages hides: the pictures behind a balloon, like a link preview's or
   an iMessage app's, which aren't anything the sender attached.
 
