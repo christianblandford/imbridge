@@ -51,28 +51,28 @@ claude mcp add imessage -- imbridge mcp   # then: "text Alex that I'm running la
 
 As of September 2026, from each project's code:
 
-| | imbridge | BlueBubbles Server | imsg | imcore-bridge |
-|---|---|---|---|---|
-| What you run | a Python library, CLI and MCP server | an Electron app with a REST/WebSocket server | a Swift CLI with a JSON-RPC mode | a Node/Bun library |
-| Send and receive text | ✓ | ✓ | ✓, even without disabling SIP | ✓ |
-| Inline replies | ✓ | ✓ | ✓ | ✓ |
-| Tapbacks you can send | classic, any emoji, stickers | classic | classic | classic, any emoji |
-| Edit and unsend | ✓ | ✓ | ✓ | ✓ |
-| Polls | create, vote, tally | ✗ | create, vote¹ | create, vote¹ |
-| Send Later | Messages' own, checked | the server's own scheduler | ✗ | Messages' own |
-| Stickers | send, stick on, tapback | ✗ | send, stick on | send |
-| Bold, italics, text effects | ✓ | ✗ | bold, italics | ✓ |
-| Link previews you send | ✓, public pages only | ✗ | ✓ | ✗ |
-| Voice messages | send (audio or text-to-speech), read transcripts | send | send, read transcripts | read transcripts |
-| Search messages | ✓ | ✓ | ✓ | ✓ |
-| Contact names | ✓ | ✓ | ✓ | ✓ |
-| Delivered and read status | ✓ | ✓ | ✓ | ✓ |
-| Typing indicators | show yours, in groups too; see others' before macOS 26² | show yours; see others' in one-to-one chats | show yours, in groups too; see others' | show yours, in groups too; see others', and who |
-| Live self-test | `imbridge doctor --live` | setup check only | setup check only | setup check only |
-| MCP server | ✓ | ✗ | ✗ | ✗ |
-| Sends only to chats you allowed | ✓ | ✗ | ✗ | ✗ |
-| Needs SIP disabled | yes | for Private API features | for its helper's features | yes |
-| Latest release | 0.7.1, September 2026 | 1.9.9, May 2025 | 0.15.9, September 2026 | 0.2.3, September 2026 |
+| | imbridge | BlueBubbles Server | imsg |
+|---|---|---|---|
+| What you run | a Python library, CLI and MCP server | an Electron app with a REST/WebSocket server | a Swift CLI with a JSON-RPC mode |
+| Send and receive text | ✓ | ✓ | ✓, even without disabling SIP |
+| Inline replies | ✓ | ✓ | ✓ |
+| Tapbacks you can send | classic, any emoji, stickers | classic | classic |
+| Edit and unsend | ✓ | ✓ | ✓ |
+| Polls | create, vote, tally | ✗ | create, vote¹ |
+| Send Later | Messages' own, checked | the server's own scheduler | ✗ |
+| Stickers | send, stick on, tapback | ✗ | send, stick on |
+| Bold, italics, text effects | ✓ | ✗ | bold, italics |
+| Link previews you send | ✓, public pages only | ✗ | ✓ |
+| Voice messages | send (audio or text-to-speech), read transcripts | send | send, read transcripts |
+| Search messages | ✓ | ✓ | ✓ |
+| Contact names | ✓ | ✓ | ✓ |
+| Delivered and read status | ✓ | ✓ | ✓ |
+| Typing indicators | show yours, in groups too; see others' before macOS 26² | show yours; see others' in one-to-one chats | show yours, in groups too; see others' |
+| Live self-test | `imbridge doctor --live` | setup check only | setup check only |
+| MCP server | ✓ | ✗ | ✗ |
+| Sends only to chats you allowed | ✓ | ✗ | ✗ |
+| Needs SIP disabled | yes | for Private API features | for its helper's features |
+| Latest release | 0.7.1, September 2026 | 1.9.9, May 2025 | 0.15.9, September 2026 |
 
 ¹ Each vote carries only the newly chosen option, so voting for a second option replaces the first. imbridge sends
 your whole current choice under the poll's own session, the way Messages does.
