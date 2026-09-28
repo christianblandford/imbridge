@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.1 (2026-09-27)
 
 - Checked against six months of a real macOS 27 chat.db (read-only): every reaction, sticker, poll, edit, unsend
   and group event now reads. Fixed along the way:
