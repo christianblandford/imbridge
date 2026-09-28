@@ -27,7 +27,12 @@ from .typedstream import attributed_body_mentions, attributed_body_text, attribu
 APPLE_EPOCH = 978_307_200  # 2001-01-01T00:00:00Z as a Unix timestamp
 GROUP_STYLE = 43  # chat.style for group chats (45 is one-to-one)
 EVENT_TYPES = (1, 2, 3)  # message.item_type: someone added or removed, the group renamed, a group action
-_EVENT_KINDS = {(1, 0): "added", (1, 1): "removed", (3, 0): "left", (3, 1): "photo_changed", (3, 2): "photo_removed"}
+# (item_type, group_action_type) -> kind. A group photo set on macOS 26 and later can come as (3, 3), with the new
+# photo attached like (3, 1).
+_EVENT_KINDS = {
+    (1, 0): "added", (1, 1): "removed", (3, 0): "left", (3, 1): "photo_changed", (3, 2): "photo_removed",
+    (3, 3): "photo_changed",
+}
 
 
 class FullDiskAccessError(PermissionError):
@@ -44,10 +49,16 @@ def apple_time(value: int | None) -> datetime | None:
 @dataclass(frozen=True)
 class Attachment:
     guid: str
-    path: str | None  # on disk, once downloaded
+    path: str | None  # where Messages keeps it (the file is there once downloaded)
     mime_type: str | None
     name: str | None
     is_sticker: bool = False  # a sticker: sent on its own, stuck on a message, or used as a tapback
+
+    @property
+    def downloaded(self) -> bool:
+        """Whether the file is on disk. Messages fetches some later, or only when opened: stickers, a photo from
+        someone who isn't in your Contacts, or an old one it offloaded."""
+        return self.path is not None and Path(self.path).is_file()
 
 
 @dataclass(frozen=True)
@@ -142,6 +153,7 @@ class ChatDB:
         self._has_schedules = False  # message.schedule_type, schedule_state and is_delivered, likewise
         self._sticker = "0"  # attachment.is_sticker, likewise
         self._shown = "1"  # attachments not hidden (hide_attachment: a balloon's own pictures, like a link preview's)
+        self._has_user_info = False  # attachment.user_info, where a voice message's transcript is kept too
 
     def close(self) -> None:
         if self._db is not None:
@@ -429,6 +441,7 @@ class ChatDB:
                 self._sticker = "a.is_sticker"
             if "hide_attachment" in attachment_columns:
                 self._shown = "NOT COALESCE(a.hide_attachment, 0)"
+            self._has_user_info = "user_info" in attachment_columns
             if "last_addressed_handle" in chat_columns:
                 self._chat_address = "c.last_addressed_handle"
             if "destination_caller_id" in message_columns:
@@ -502,7 +515,7 @@ class ChatDB:
                     vote=poll if isinstance(poll, PollVote) else None,
                     scheduled_for=apple_time(row["date"]) if _waiting(row) else None,
                     is_voice=bool(row["is_audio_message"]),
-                    transcript=attributed_body_transcript(row["attributedBody"]) if row["is_audio_message"] else None,
+                    transcript=self._transcript(row) if row["is_audio_message"] else None,
                     status=_status(row),
                     delivered_at=apple_time(row["date_delivered"]) if row["is_from_me"] else None,
                     read_at=apple_time(row["date_read"]),
@@ -510,6 +523,26 @@ class ChatDB:
                 )
             )
         return messages
+
+    def _transcript(self, row: sqlite3.Row) -> str | None:
+        """A voice message's words: an attribute of the message, and usually also its audio attachment's user_info
+        ("audio-transcription"), which is read when the message has none."""
+        if found := attributed_body_transcript(row["attributedBody"]):
+            return found
+        if not self._has_user_info:
+            return None
+        for (info,) in self._query(
+            "SELECT a.user_info FROM message_attachment_join j JOIN attachment a ON a.ROWID = j.attachment_id"
+            " WHERE j.message_id = ? AND a.user_info IS NOT NULL",
+            (row["rowid"],),
+        ):
+            try:
+                words = plistlib.loads(info).get("audio-transcription")
+            except (plistlib.InvalidFileException, ValueError, AttributeError):
+                continue
+            if isinstance(words, str) and words.strip():
+                return words.strip()
+        return None
 
     def _attachments(self, rowids: list[int]) -> dict[int, tuple[Attachment, ...]]:
         if not rowids:

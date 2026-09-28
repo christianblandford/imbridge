@@ -21,6 +21,7 @@ def with_events(path):
         ("KICK", 1, 1, 0, 2, None),  # you removed sam
         ("NAME", 2, 0, 1, 0, "Crew 2.0"),
         ("BYE", 3, 0, 1, 0, None),  # +15551234567 left
+        ("PHOTO", 3, 3, 1, 0, None),  # a new group photo, as macOS 26 and later can record it
         ("ODD", 3, 7, 1, 0, None),  # a group action imbridge has no name for
     ]
     for t, (guid, item_type, action, actor, other, title) in enumerate(events, 10):
@@ -44,6 +45,7 @@ def test_reading_group_changes(chat_db):
     assert found["KICK"].sender is None  # you did
     assert found["NAME"].event == GroupEvent("renamed", name="Crew 2.0", code=(2, 0))
     assert found["BYE"].event == GroupEvent("left", person="+15551234567", code=(3, 0))
+    assert found["PHOTO"].event == GroupEvent("photo_changed", code=(3, 3))
     assert found["ODD"].event == GroupEvent("other", code=(3, 7))
     assert not any(message.event for message in db.history(CREW))  # only when asked for
 
@@ -53,7 +55,7 @@ def test_group_changes_in_the_stream(chat_db):
 
     async def scenario():
         im = IMBridge(chat_db=path, token="t", inject=False, poll_interval=0.01, allow=[CREW])
-        start = ChatDB(path).max_rowid() - 5  # just before the changes
+        start = ChatDB(path).max_rowid() - 6  # just before the changes
         events = im.chat(CREW).messages(since=start, include_events=True)
         first = await asyncio.wait_for(anext(events), 5)
         found, _ = await im.new_messages(since=start, include_events=True)
@@ -62,7 +64,7 @@ def test_group_changes_in_the_stream(chat_db):
 
     first, found, nothing = asyncio.run(scenario())
     assert first.guid == "ADD" and first.event.kind == "added"
-    assert [message.guid for message in found] == ["ADD", "KICK", "NAME", "BYE", "ODD"]
+    assert [message.guid for message in found] == ["ADD", "KICK", "NAME", "BYE", "PHOTO", "ODD"]
     assert nothing == []
 
 

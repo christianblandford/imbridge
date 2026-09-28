@@ -8,7 +8,8 @@ whose URL holds the poll as base64 JSON in a data: URL.
     a vote      {"version": 1, "item": {"votes": [{"voteOptionIdentifier": "<uuid>", "participantHandle": ...}]}}
 
 In chat.db, associated_message_type 0 is the poll itself; 2 and 3 are updates carrying the full option list after
-someone added a choice; 4000 is a vote, whose associated_message_guid is the poll (or latest update) it was cast on.
+someone added a choice; 4000 and 4001 are votes (the same payload; which one a device sends varies), whose
+associated_message_guid is the poll (or latest update) it was cast on.
 A vote holds the voter's whole current choice, so voting again replaces it and an empty vote takes it back. Every row
 of one poll shares the payload's sessionIdentifier.
 
@@ -30,7 +31,7 @@ from typing import Any
 
 POLLS_BUNDLE = "com.apple.messages.MSMessageExtensionBalloonPlugin:0000000000:com.apple.messages.Polls"
 POLL_TYPES = (0, 2, 3)  # associated_message_type: the poll, and updates after someone added a choice
-VOTE_TYPE = 4000
+VOTE_TYPES = (4000, 4001)
 
 
 @dataclass(frozen=True)
@@ -122,7 +123,7 @@ def parse_poll(associated_type: int | None, associated_guid: str | None, data: b
     archive, content = decoded
     session = _text(archive.get("sessionIdentifier")) or ""
     item = content["item"]
-    if (associated_type or 0) == VOTE_TYPE:
+    if (associated_type or 0) in VOTE_TYPES:
         votes = item.get("votes") if isinstance(item.get("votes"), list) else []
         picked = [vote.get("voteOptionIdentifier") for vote in votes if isinstance(vote, dict)]
         target = (associated_guid or "").split("/")[-1]  # a bare GUID; tolerate "p:0/GUID" too

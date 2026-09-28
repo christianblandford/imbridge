@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Checked against six months of a real macOS 27 chat.db (read-only): every reaction, sticker, poll, edit, unsend
+  and group event now reads. Fixed along the way:
+  - Votes recorded as associated_message_type 4001 (the same payload as 4000) were dropped; they're votes now, and
+    count in tallies.
+  - A group photo set on macOS 26 and later can be recorded as (3, 3); it's `photo_changed` now, not `other`.
+  - A voice message's transcript is also read from its audio's attachment (`user_info`'s "audio-transcription")
+    when the message itself has none.
+  - `Attachment.downloaded` says whether the file is on disk: Messages fetches some later, or only when opened
+    (stickers, photos from people who aren't in your Contacts, old files it offloaded).
 - Typing, as tested on macOS 27: `typing()` shows your bubble, in group chats too, and `typing(False)` takes it away,
   which Messages carries out about three seconds later. Seeing others type stays best effort, and the docs now say
   why: on macOS 26 and later, Messages only takes in typing for the conversation on screen, and imbridge runs it

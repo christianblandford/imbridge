@@ -65,7 +65,7 @@ def with_poll(path):
         ("V1", 2, 13.0, " ", payload(votes("sam@example.com", PIZZA)), 4000, "P1"),
         ("V2", 1, 14.0, " ", payload(votes("+15551234567", PIZZA, SUSHI)), 4000, "U1"),  # two choices
         ("V3", 0, 15.0, " ", payload(votes("+15550002222", TACOS)), 4000, "U1"),
-        ("V4", 2, 16.0, " ", payload(votes("sam@example.com", SUSHI)), 4000, "U1"),  # Sam changes his mind
+        ("V4", 2, 16.0, " ", payload(votes("sam@example.com", SUSHI)), 4001, "U1"),  # Sam changes his mind (a 4001)
         ("V5", 1, 17.0, " ", payload({"votes": []}), 4000, "U1"),  # and +15551234567 takes theirs back
         ("LATER", 2, 30.0, "Sent a poll", None, 0, None),  # typed by hand, long after: a real message
     ]
@@ -92,6 +92,7 @@ def test_reading_poll_messages(chat_db):
     assert db.message("U1").poll.update_of == "P1"
     assert db.message("V2").vote == PollVote(SESSION, "U1", (PIZZA, SUSHI))
     assert db.message("V5").vote.options == ()  # a vote taken back
+    assert db.message("V4").vote == PollVote(SESSION, "U1", (SUSHI,))  # 4001: a vote too, as macOS 27 records some
 
 
 def test_the_fallback_text_is_skipped_like_messages_does(chat_db):

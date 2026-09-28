@@ -72,9 +72,10 @@ def test_pins_in_messages(chat_db, tmp_path):
     db.close()
     found = ChatDB(chat_db).message("PIN")
     assert found.location.name == "Apple Park" and found.location.latitude == 37.334886
+    assert found.attachments[0].downloaded
     pin.unlink()  # Messages offloads old attachments: no file, no location, but the attachment is still there
     offloaded = ChatDB(chat_db).message("PIN")
-    assert offloaded.location is None and offloaded.attachments
+    assert offloaded.location is None and offloaded.attachments and not offloaded.attachments[0].downloaded
 
 
 def test_sending_a_pin(chat_db):

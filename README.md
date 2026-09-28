@@ -325,7 +325,7 @@ Every `Message` has these fields:
 | `text`, `date`, `service` | the text (decoded from `attributedBody` when needed), a UTC datetime, and `iMessage`/`SMS`/`RCS` |
 | `reply_to` | the GUID of the message this is an inline reply to |
 | `reaction` | set when the row is a tapback: `kind` (`love`…`question`, `emoji`, `sticker_tapback`, or `sticker` for one stuck on the bubble), `emoji`, `removed`, `target_guid`, `target_part` |
-| `attachments` | each with a `path` on disk, `mime_type`, `name` and `is_sticker` |
+| `attachments` | each with a `path`, `mime_type`, `name`, `is_sticker`, and `downloaded` (whether the file is on disk yet) |
 | `edited_at`, `edit_count` | set once it's been edited; `text` is then the edited text |
 | `unsent_at` | set once its sender took it back; `text` is then `None` |
 | `scheduled_for` | for your own message waiting in Send Later: when it goes out |

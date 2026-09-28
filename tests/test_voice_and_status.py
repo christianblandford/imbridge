@@ -1,6 +1,7 @@
 """Voice messages (reading transcripts, sending audio or speech) and where your messages have got to."""
 
 import asyncio
+import plistlib
 import sqlite3
 from pathlib import Path
 
@@ -57,6 +58,21 @@ def test_voice_messages_in_chat_db(chat_db):
     assert voice.played_at is not None and voice.status is None  # someone else's: no status
     assert (quiet.is_voice, quiet.transcript) == (True, None)
     assert db.message("M1").is_voice is False
+
+
+def test_a_transcript_kept_only_with_the_audio(chat_db):
+    add(chat_db, "VOICE", me=0, text=None, body=voice_body(None), is_audio_message=1)
+    db = sqlite3.connect(chat_db)
+    db.execute("ALTER TABLE attachment ADD COLUMN user_info BLOB")
+    info = plistlib.dumps({"audio-transcription": " Running late ", "uti-type": "com.apple.coreaudio-format"})
+    attachment = db.execute(
+        "INSERT INTO attachment (guid, transfer_name, user_info) VALUES ('AUDIO', 'Audio Message.caf', ?)", (info,)
+    ).lastrowid
+    rowid = db.execute("SELECT ROWID FROM message WHERE guid = 'VOICE'").fetchone()[0]
+    db.execute("INSERT INTO message_attachment_join VALUES (?, ?)", (rowid, attachment))
+    db.commit()
+    db.close()
+    assert ChatDB(chat_db).message("VOICE").transcript == "Running late"
 
 
 def test_statuses(chat_db):
