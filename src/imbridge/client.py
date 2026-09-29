@@ -65,6 +65,7 @@ LINK_TIMEOUT = 15.0  # seconds Messages gets to load a link's preview before it 
 TYPING_TIMEOUT = 60.0  # seconds a typing bubble lasts with no news: Messages lets one go about then
 VOICE_FILE = "Audio Message.caf"  # what Messages names the voice messages it records
 MAX_SPOKEN = 5000  # characters of text send_voice speaks (several minutes of audio)
+MAX_FILES = 20  # files send_files puts in one message
 # The macOS each feature needs on this Mac; the people you message need the matching iOS or macOS to see it. Messages
 # on an older macOS doesn't even keep a poll someone sends: only its "Sent a poll" text.
 FEATURES = {
@@ -239,6 +240,16 @@ def helper_build(dylib: Path) -> str | None:
     return found[1].decode() if found else None
 
 
+def _stage(source: Path) -> Path:
+    """A copy of `source` where sandboxed Messages can read it, in a folder of its own under the same name: Messages
+    reads nothing outside ~/Library/Messages, and the copy becomes the attachment it keeps."""
+    folder = config.OUTGOING / uuid.uuid4().hex
+    folder.mkdir(parents=True)
+    staged = folder / source.name
+    shutil.copyfile(source, staged)
+    return staged
+
+
 def question_guid(poll_guid: str) -> str:
     """The GUID send_poll gives the question it sends after a poll whose GUID you chose: a UUID made from the poll's."""
     return str(uuid.uuid5(uuid.UUID(poll_guid), "question")).upper()
@@ -368,6 +379,18 @@ class Chat:
         messages. Returns the new message's GUID. guid: see IMBridge.send."""
         target = _target_ref(*await self._own(reply_to)) if reply_to is not None else None
         return await self._bridge.send_file(self.guid, path, reply_to=target, guid=guid)
+
+    async def send_files(
+        self,
+        paths: Iterable[str | Path],
+        *,
+        text: Text | None = None,
+        reply_to: Message | str | None = None,
+        guid: str | None = None,
+    ) -> str:
+        """Send several files as one message, with text after them if given. See IMBridge.send_files."""
+        target = _target_ref(*await self._own(reply_to)) if reply_to is not None else None
+        return await self._bridge.send_files(self.guid, paths, text=text, reply_to=target, guid=guid)
 
     async def reply(self, message: Message | str, text: Text, *, guid: str | None = None) -> str:
         """Reply inline to one of this chat's messages (a Message or its GUID). guid: see IMBridge.send."""
@@ -1053,10 +1076,8 @@ class IMBridge:
     async def _send_staged(self, action: str, source: Path, request: dict[str, Any], *, sticker: bool = False) -> str:
         """Copy a file into ~/Library/Messages/Attachments/imbridge (sandboxed Messages reads nothing else; the copy
         becomes the attachment), then ask the helper to send it. Call only once the send has passed the checks."""
-        folder = config.OUTGOING / uuid.uuid4().hex
-        folder.mkdir(parents=True)
-        staged = folder / source.name
-        shutil.copyfile(source, staged)
+        staged = _stage(source)
+        folder = staged.parent
         request = {**request, "filePath": str(staged)}
         if sticker:
             request["stickerId"] = str(uuid.uuid4()).upper()
@@ -1177,6 +1198,65 @@ class IMBridge:
             "guid": guid,
         }
         sent = await self._send_staged("send-attachment", source, request)
+        self._remember(sent, chat_guid)
+        return sent
+
+    async def send_files(
+        self,
+        chat: str,
+        paths: Iterable[str | Path],
+        *,
+        text: Text | None = None,
+        reply_to: str | None = None,
+        guid: str | None = None,
+    ) -> str:
+        """Send several files as one message to an allowed chat, with text after them if given, as Messages does
+        when you paste files into the text field and type; returns the message's GUID.
+
+        Each file is copied into ~/Library/Messages/Attachments/imbridge, as for send_file(). text is a string, or
+        strings and Spans, as for send(); reply_to and guid are as for send_file(). It's one send toward the rate
+        limits. Reading it back, the Message has every file among its attachments, and the text as its text.
+        """
+        guid = _chosen(guid)
+        sources = [Path(path).expanduser() for path in paths]
+        if not sources:
+            raise ValueError("send_files needs a file to send")
+        if len(sources) > MAX_FILES:
+            raise ValueError(f"one message can carry {MAX_FILES} files at most")
+        for source in sources:
+            if not source.is_file():
+                raise FileNotFoundError(f"no file at {source}")
+        chat_guid = self.resolve_chat(chat)
+        self._check_send(chat_guid)
+        formatted = spans(text) if text is not None else []
+        self._check_mentions(chat_guid, formatted)
+        self._guard.record_send(chat_guid)
+        target, part = parse_target(reply_to) if reply_to else (None, 0)
+        staged = [_stage(source) for source in sources]
+        # Messages keeps a message's pieces as numbered parts: the files first, then the text.
+        pieces = [{"partIndex": index, "filePath": str(file)} for index, file in enumerate(staged)]
+        if formatted:
+            pieces += [{**piece, "partIndex": len(staged)} for piece in parts(formatted)]
+        elif text is not None and plain(text).strip():
+            pieces.append({"partIndex": len(staged), "text": plain(text)})
+        request = {
+            "chatGuid": chat_guid,
+            "subject": None,
+            "effectId": None,
+            "selectedMessageGuid": target,
+            "partIndex": part,
+            "guid": guid,
+            "parts": pieces,
+        }
+        try:
+            result = await self._request("send-multipart", request)
+        except HelperError:
+            for file in staged:  # refused, so nothing refers to the copies (unlike a timeout)
+                shutil.rmtree(file.parent, ignore_errors=True)
+            raise
+        sent = result.get("identifier")
+        if text is not None and plain(text).strip():
+            self._recent.append((time.monotonic(), chat_guid, f"text:{plain(text).strip()}"))
         self._remember(sent, chat_guid)
         return sent
 

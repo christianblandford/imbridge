@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `send_files(chat, paths, text=None)`, on `IMBridge` and on a `Chat`: several files as one message, with text after
+  them if given, as Messages sends what you paste into one text field. Each file is copied where Messages can read it,
+  as for `send_file()`, and the send takes a `guid` for safe retries. Verified live on macOS 27: one message, with
+  both files among its attachments and the text as its text.
+
 ## 0.7.1 (2026-09-27)
 
 - Checked against six months of a real macOS 27 chat.db (read-only): every reaction, sticker, poll, edit, unsend

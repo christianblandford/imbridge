@@ -17,6 +17,7 @@ from imbridge import (
     IMBridge,
     NewContact,
     SendNotAllowed,
+    Span,
     WrongAddress,
     WrongChat,
     config,
@@ -147,6 +148,78 @@ def test_a_refused_file_leaves_no_copy_behind(chat_db, tmp_path):
     with pytest.raises(HelperError):
         refused = {"send-attachment": {"error": "chat not found"}}
         run(chat_db, lambda im: im.send_file(ALEX, photo), refused, allow=[ALEX])
+    assert not any(config.OUTGOING.iterdir())
+
+
+def cards(folder, *names):
+    """A contact card file for each name, as a group's members' cards would be."""
+    made = []
+    for name in names:
+        card = folder / f"{name}.vcf"
+        card.write_text(f"BEGIN:VCARD\r\nVERSION:3.0\r\nFN:{name}\r\nEND:VCARD\r\n")
+        made.append(card)
+    return made
+
+
+def test_several_files_go_as_one_message_with_the_text_after_them(chat_db, tmp_path):
+    sam, alex = cards(tmp_path, "Sam Rivera", "Alex Kim")
+    guid = "5A8F1F0E-4B7E-4C55-9A52-8A1F3B2C6D7E"
+    sent, (request,) = run(
+        chat_db, lambda im: im.send_files(ALEX, [sam, alex], text="everyone's numbers", guid=guid), allow=[ALEX]
+    )
+
+    assert (request["action"], sent) == ("send-multipart", "SENT-1")
+    data = request["data"]
+    assert (data["chatGuid"], data["guid"]) == (ALEX, guid)
+    first, second, text = data["parts"]
+    assert (first["partIndex"], second["partIndex"], text) == (0, 1, {"partIndex": 2, "text": "everyone's numbers"})
+    for part, name in ((first, "Sam Rivera.vcf"), (second, "Alex Kim.vcf")):
+        staged = Path(part["filePath"])
+        assert staged.name == name and staged.parent.parent == config.OUTGOING  # each copied, in a folder of its own
+        assert staged.read_text().startswith("BEGIN:VCARD")
+    assert Path(first["filePath"]).parent != Path(second["filePath"]).parent
+
+
+def test_files_without_text_or_with_formatting(chat_db, tmp_path):
+    sam, alex = cards(tmp_path, "Sam Rivera", "Alex Kim")
+
+    async def scenario(im):
+        await im.send_files(ALEX, [sam])
+        await im.chat(ALEX).send_files([sam, alex], text=[Span("all", bold=True), " of us"], reply_to="M1")
+
+    _, (plain, formatted) = run(chat_db, scenario, allow=[ALEX])
+
+    assert [part["partIndex"] for part in plain["data"]["parts"]] == [0]
+    pieces = formatted["data"]["parts"]
+    assert [(part["partIndex"], part.get("text"), part.get("styles")) for part in pieces] == [
+        (0, None, None),
+        (1, None, None),
+        (2, "all", ["bold"]),
+        (2, " of us", []),
+    ]
+    assert formatted["data"]["selectedMessageGuid"] == "M1"
+
+
+def test_files_are_checked_before_anything_is_copied_or_sent(chat_db, tmp_path):
+    (sam,) = cards(tmp_path, "Sam Rivera")
+    log = []
+    for bad, error in (
+        (lambda im: im.send_files(ALEX, []), ValueError),
+        (lambda im: im.send_files(ALEX, [sam] * 21), ValueError),
+        (lambda im: im.send_files(ALEX, [sam, tmp_path / "gone.vcf"]), FileNotFoundError),
+        (lambda im: im.send_files(CREW, [sam]), SendNotAllowed),
+    ):
+        with pytest.raises(error):
+            run(chat_db, bad, None, log, allow=[ALEX])
+    assert log == []
+    assert not config.OUTGOING.exists() or not any(config.OUTGOING.iterdir())
+
+
+def test_files_messages_refuses_leave_no_copies_behind(chat_db, tmp_path):
+    sam, alex = cards(tmp_path, "Sam Rivera", "Alex Kim")
+    with pytest.raises(HelperError):
+        refused = {"send-multipart": {"error": "chat not found"}}
+        run(chat_db, lambda im: im.send_files(ALEX, [sam, alex], text="hi"), refused, allow=[ALEX])
     assert not any(config.OUTGOING.iterdir())
 
 

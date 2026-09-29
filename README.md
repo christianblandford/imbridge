@@ -218,6 +218,7 @@ async with IMBridge(allow=["+15551234567"]) as im:
     await chat.react(guid, "🔥", remove=True)
     await chat.send_file("chart.png")                     # a photo, GIF, video or document
     await chat.send_file("chart.png", reply_to=guid)      # ...as an inline reply
+    await chat.send_files(["a.vcf", "b.vcf"], text="hi")  # several files as one message, text after them
     await chat.send_sticker("party.png", on=guid)         # a sticker, stuck onto a message (or on its own)
     await chat.react_with_sticker(guid, "party.png")      # a sticker as a tapback
     await chat.send_location(37.3349, -122.0090, name="Apple Park")   # a location pin
@@ -260,11 +261,11 @@ async with IMBridge(allow=["+15551234567"]) as im:
 A group's name only works when no other chat shares it; otherwise imbridge refuses and lists the candidates' GUIDs
 (`imbridge chats` shows which is which).
 
-A chat has `guid`, `name`, `is_group`, `participants` (everyone but the address the program runs as),
-`last_message_at`, `address` (which of your addresses it's on) and `can_send`. `IMBridge` also has `send`,
-`send_file`, `reply`, `react`, `edit`, `unsend`, `typing` and `mark_read` that take a chat or message GUID directly;
-the same allowlist and limits apply. iMessage keeps one tapback per person per message, so a new tapback replaces your
-previous one.
+A chat has `guid`, `name`, `is_group`, `participants` (everyone but the address the program runs as), `last_message_at`,
+`address` (which of your addresses it's on) and `can_send`. `IMBridge` also has `send`, `send_file`, `send_files`,
+`reply`, `react`, `edit`, `unsend`, `typing` and `mark_read` that take a chat or message GUID directly; the same
+allowlist and limits apply. iMessage keeps one tapback per person per message, so a new tapback replaces your previous
+one.
 
 **Formatting.** Besides a plain string, `send()` and `reply()` take a list of strings and `Span`s
 (`from imbridge import Span`):
@@ -299,10 +300,10 @@ and rate limits apply when it's scheduled, so disallowing the chat afterwards do
 get a scheduled message at once, and checks that Messages really held each message in the right chat
 (`SendLaterFailed` if not).
 
-**Retrying safely.** `send()`, `reply()`, `send_file()`, `send_link()` and `send_poll()` take a `guid` you choose (a
-UUID, like `str(uuid.uuid4())`). Record it before sending; after a timeout or a crash, `im.message(guid)` tells you
-whether the message went out, and sending again with the same `guid` doesn't deliver it twice: Messages drops the
-duplicate. A poll's question goes out as a message of its own, with a GUID made from the poll's
+**Retrying safely.** `send()`, `reply()`, `send_file()`, `send_files()`, `send_link()` and `send_poll()` take a `guid`
+you choose (a UUID, like `str(uuid.uuid4())`). Record it before sending; after a timeout or a crash, `im.message(guid)`
+tells you whether the message went out, and sending again with the same `guid` doesn't deliver it twice: Messages drops
+the duplicate. A poll's question goes out as a message of its own, with a GUID made from the poll's
 (`question_guid(guid)`), so resending the pair is safe too.
 
 **Starting conversations.** `im.send()` to a phone number or email you have no conversation with starts one, over
@@ -310,9 +311,11 @@ iMessage if they have it and SMS otherwise. They have to be allowed: `IMBridge(a
 in code, or `imbridge allow +15557654321`. The number needs its country code; a local number is refused, so a missing
 `+1` can't reach a stranger. See [which address](#which-of-your-numbers-it-answers-on) it goes out from.
 
-**Files.** `send_file()` sends photos, GIFs, videos and documents. Messages is sandboxed and can only read files inside
-`~/Library/Messages`, so imbridge first copies the file to `~/Library/Messages/Attachments/imbridge/`. That copy becomes
-the attachment Messages keeps, like every other file in its Attachments folder.
+**Files.** `send_file()` sends photos, GIFs, videos and documents, and `send_files()` sends several as one message, with
+text after them if you like, as Messages does when you paste files and type (up to 20; one send toward the rate limits).
+Messages is sandboxed and can only read files inside `~/Library/Messages`, so imbridge first copies each file to
+`~/Library/Messages/Attachments/imbridge/`. That copy becomes the attachment Messages keeps, like every other file in
+its Attachments folder.
 
 Every `Message` has these fields:
 
