@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (2026-09-29)
 
 - `send_files(chat, paths, text=None)`, on `IMBridge` and on a `Chat`: several files as one message, with text after
   them if given, as Messages sends what you paste into one text field. Each file is copied where Messages can read it,
